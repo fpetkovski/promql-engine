@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"github.com/thanos-community/promql-engine/worker"
 	"time"
 
 	"github.com/efficientgo/core/errors"
@@ -99,12 +100,13 @@ func (e *engine) NewInstantQuery(q storage.Queryable, opts *promql.QueryOpts, qs
 		return nil, err
 	}
 
-	plan, err := physicalplan.New(expr, q, ts, ts, 0)
+	workers := worker.NewGroup(4)
+	plan, err := physicalplan.New(expr, q, workers, ts, ts, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	return newInstantQuery(plan, expr, ts), nil
+	return newInstantQuery(workers, plan, expr, ts), nil
 }
 
 func (e *engine) NewRangeQuery(q storage.Queryable, opts *promql.QueryOpts, qs string, start, end time.Time, interval time.Duration) (promql.Query, error) {
@@ -118,10 +120,11 @@ func (e *engine) NewRangeQuery(q storage.Queryable, opts *promql.QueryOpts, qs s
 		return nil, errors.Newf("invalid expression type %q for range query, must be Scalar or instant Vector", parser.DocumentedType(expr.Type()))
 	}
 
-	plan, err := physicalplan.New(expr, q, start, end, interval)
+	workers := worker.NewGroup(4)
+	plan, err := physicalplan.New(expr, q, workers, start, end, interval)
 	if err != nil {
 		return nil, err
 	}
 
-	return newRangeQuery(plan), nil
+	return newRangeQuery(workers, plan), nil
 }

@@ -31,10 +31,11 @@ type aggregate struct {
 	series []labels.Labels
 
 	stepsBatch int
-	workers    worker.Group
+	workers    *worker.Group
 }
 
 func NewHashAggregate(
+	workers *worker.Group,
 	points *model.VectorPool,
 	next model.VectorOperator,
 	aggregation parser.ItemType,
@@ -50,8 +51,9 @@ func NewHashAggregate(
 		aggregation: aggregation,
 		labels:      labels,
 		stepsBatch:  stepsBatch,
+
+		workers: workers,
 	}
-	a.workers = worker.NewGroup(stepsBatch, a.workerTask)
 
 	return a, nil
 }
@@ -85,17 +87,24 @@ func (a *aggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 		return nil, err
 	}
 
-	result := a.vectorPool.GetVectorBatch()
+	tasks := make([]*worker.Task, len(in))
+	out := a.vectorPool.GetVectorBatch()
+	out = out[:len(in)]
 	for i, vector := range in {
-		a.workers[i].Send(vector)
+		v := vector
+		i := i
+		tasks[i] = worker.NewTask(func() {
+			out[i] = a.workerTask(i, v)
+		})
+		a.workers.Send(tasks[i])
 	}
 
 	for i, vector := range in {
-		result = append(result, a.workers[i].GetOutput())
+		tasks[i].Wait()
 		a.next.GetPool().PutStepVector(vector)
 	}
 
-	return result, nil
+	return out, nil
 }
 
 func (a *aggregate) initializeTables(ctx context.Context) error {
@@ -103,8 +112,6 @@ func (a *aggregate) initializeTables(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
-	a.workers.Start(ctx)
 
 	if a.by && len(a.labels) == 0 {
 		tables, err := newVectorizedTables(a.stepsBatch, a.aggregation)

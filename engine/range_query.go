@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"github.com/thanos-community/promql-engine/worker"
 	"sort"
 	"sync"
 
@@ -16,19 +17,23 @@ import (
 )
 
 type rangeQuery struct {
-	once sync.Once
-	plan model.VectorOperator
+	once    sync.Once
+	workers *worker.Group
+	plan    model.VectorOperator
 }
 
-func newRangeQuery(plan model.VectorOperator) promql.Query {
+func newRangeQuery(workers *worker.Group, plan model.VectorOperator) promql.Query {
 	return &rangeQuery{
-		plan: plan,
+		workers: workers,
+		plan:    plan,
 	}
 }
 
 func (q *rangeQuery) Exec(ctx context.Context) *promql.Result {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	q.workers.Start(ctx)
 
 	resultSeries, err := q.plan.Series(ctx)
 	if err != nil {

@@ -5,63 +5,61 @@ package worker
 
 import (
 	"context"
-	"github.com/thanos-community/promql-engine/physicalplan/model"
 )
 
-type Group []*Worker
-
-func NewGroup(numWorkers int, task Task) Group {
-	group := make([]*Worker, numWorkers)
-	for i := 0; i < numWorkers; i++ {
-		group[i] = New(i, task)
-	}
-	return group
+type Group struct {
+	input   chan *Task
+	workers []*Worker
 }
 
-func (g Group) Start(ctx context.Context) {
-	for _, w := range g {
-		go w.Start(ctx)
+func NewGroup(numWorkers int) *Group {
+	input := make(chan *Task, 1024*numWorkers)
+	workers := make([]*Worker, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		workers[i] = newWorker(input)
 	}
+	return &Group{
+		input:   input,
+		workers: workers,
+	}
+}
+
+func (g *Group) Start(ctx context.Context) {
+	for _, w := range g.workers {
+		go w.start(ctx)
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			close(g.input)
+		}
+	}()
+}
+
+func (g *Group) Send(task *Task) {
+	g.input <- task
 }
 
 type Worker struct {
-	workerID int
-	input    chan model.StepVector
-	output   chan model.StepVector
-	doWork   Task
+	input chan *Task
 }
 
-type Task func(workerID int, in model.StepVector) model.StepVector
-
-func New(workerID int, task Task) *Worker {
-	input := make(chan model.StepVector, 1)
-	output := make(chan model.StepVector, 1)
-
+func newWorker(input chan *Task) *Worker {
 	return &Worker{
-		workerID: workerID,
-		input:    input,
-		output:   output,
-		doWork:   task,
+		input: input,
 	}
 }
 
-func (w *Worker) Start(ctx context.Context) {
+func (w *Worker) start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			close(w.input)
-			close(w.output)
 			return
-		case task := <-w.input:
-			w.output <- w.doWork(w.workerID, task)
+		case task, ok := <-w.input:
+			if ok {
+				task.action()
+				task.markDone()
+			}
 		}
 	}
-}
-
-func (w *Worker) Send(input model.StepVector) {
-	w.input <- input
-}
-
-func (w *Worker) GetOutput() model.StepVector {
-	return <-w.output
 }

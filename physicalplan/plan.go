@@ -4,6 +4,7 @@
 package physicalplan
 
 import (
+	"github.com/thanos-community/promql-engine/worker"
 	"runtime"
 	"time"
 
@@ -25,18 +26,18 @@ const stepsBatch = 10
 var ErrNotSupportedExpr = errors.New("unsupported expression")
 
 // New creates new physical query execution plan for a given query expression.
-func New(expr parser.Expr, storage storage.Queryable, mint, maxt time.Time, step time.Duration) (model.VectorOperator, error) {
-	return newOperator(expr, storage, mint, maxt, step)
+func New(expr parser.Expr, storage storage.Queryable, workers *worker.Group, mint, maxt time.Time, step time.Duration) (model.VectorOperator, error) {
+	return newOperator(expr, storage, workers, mint, maxt, step)
 }
 
-func newOperator(expr parser.Expr, storage storage.Queryable, mint, maxt time.Time, step time.Duration) (model.VectorOperator, error) {
+func newOperator(expr parser.Expr, storage storage.Queryable, workers *worker.Group, mint, maxt time.Time, step time.Duration) (model.VectorOperator, error) {
 	switch e := expr.(type) {
 	case *parser.AggregateExpr:
-		next, err := newOperator(e.Expr, storage, mint, maxt, step)
+		next, err := newOperator(e.Expr, storage, workers, mint, maxt, step)
 		if err != nil {
 			return nil, err
 		}
-		a, err := aggregate.NewHashAggregate(model.NewVectorPool(stepsBatch), next, e.Op, !e.Without, e.Grouping, stepsBatch)
+		a, err := aggregate.NewHashAggregate(workers, model.NewVectorPool(stepsBatch), next, e.Op, !e.Without, e.Grouping, stepsBatch)
 		if err != nil {
 			return nil, err
 		}
@@ -83,13 +84,13 @@ func newOperator(expr parser.Expr, storage storage.Queryable, mint, maxt time.Ti
 
 	case *parser.BinaryExpr:
 		if e.LHS.Type() == parser.ValueTypeScalar || e.RHS.Type() == parser.ValueTypeScalar {
-			return newScalarBinaryOperator(e, storage, mint, maxt, step)
+			return newScalarBinaryOperator(e, storage, workers, mint, maxt, step)
 		}
 
-		return newVectorBinaryOperator(e, storage, mint, maxt, step)
+		return newVectorBinaryOperator(e, storage, workers, mint, maxt, step)
 
 	case *parser.ParenExpr:
-		return newOperator(e.Expr, storage, mint, maxt, step)
+		return newOperator(e.Expr, storage, workers, mint, maxt, step)
 
 	case *parser.StringLiteral:
 		return nil, nil
@@ -98,28 +99,28 @@ func newOperator(expr parser.Expr, storage storage.Queryable, mint, maxt time.Ti
 	}
 }
 
-func newVectorBinaryOperator(e *parser.BinaryExpr, storage storage.Queryable, mint time.Time, maxt time.Time, step time.Duration) (model.VectorOperator, error) {
+func newVectorBinaryOperator(e *parser.BinaryExpr, storage storage.Queryable, workers *worker.Group, mint time.Time, maxt time.Time, step time.Duration) (model.VectorOperator, error) {
 	if len(e.VectorMatching.Include) > 0 {
 		return nil, errors.Wrapf(ErrNotSupportedExpr, "got: %s", e)
 	}
 
-	leftOperator, err := newOperator(e.LHS, storage, mint, maxt, step)
+	leftOperator, err := newOperator(e.LHS, storage, workers, mint, maxt, step)
 	if err != nil {
 		return nil, err
 	}
-	rightOperator, err := newOperator(e.RHS, storage, mint, maxt, step)
+	rightOperator, err := newOperator(e.RHS, storage, workers, mint, maxt, step)
 	if err != nil {
 		return nil, err
 	}
 	return binary.NewVectorOperator(model.NewVectorPool(stepsBatch), leftOperator, rightOperator, e.VectorMatching, e.Op)
 }
 
-func newScalarBinaryOperator(e *parser.BinaryExpr, storage storage.Queryable, mint time.Time, maxt time.Time, step time.Duration) (model.VectorOperator, error) {
-	lhs, err := newOperator(e.LHS, storage, mint, maxt, step)
+func newScalarBinaryOperator(e *parser.BinaryExpr, storage storage.Queryable, workers *worker.Group, mint time.Time, maxt time.Time, step time.Duration) (model.VectorOperator, error) {
+	lhs, err := newOperator(e.LHS, storage, workers, mint, maxt, step)
 	if err != nil {
 		return nil, err
 	}
-	rhs, err := newOperator(e.RHS, storage, mint, maxt, step)
+	rhs, err := newOperator(e.RHS, storage, workers, mint, maxt, step)
 	if err != nil {
 		return nil, err
 	}

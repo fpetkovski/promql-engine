@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"github.com/thanos-community/promql-engine/worker"
 	"time"
 
 	"github.com/efficientgo/core/errors"
@@ -16,29 +17,33 @@ import (
 )
 
 type instantQuery struct {
-	plan model.VectorOperator
-	expr parser.Expr
-	ts   time.Time
+	workers *worker.Group
+	plan    model.VectorOperator
+	expr    parser.Expr
+	ts      time.Time
 }
 
-func newInstantQuery(plan model.VectorOperator, expr parser.Expr, ts time.Time) promql.Query {
+func newInstantQuery(workers *worker.Group, plan model.VectorOperator, expr parser.Expr, ts time.Time) promql.Query {
 	return &instantQuery{
-		plan: plan,
-		expr: expr,
-		ts:   ts,
+		workers: workers,
+		plan:    plan,
+		expr:    expr,
+		ts:      ts,
 	}
 }
 
 func (q *instantQuery) Exec(ctx context.Context) *promql.Result {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	q.workers.Start(ctx)
+
 	// Handle case with strings early on as this does not need us to process samples.
 	// TODO(saswatamcode): Modify models.StepVector to support all types and check during plan creation.
 	switch e := q.expr.(type) {
 	case *parser.StringLiteral:
 		return &promql.Result{Value: promql.String{V: e.Val, T: q.ts.UnixMilli()}}
 	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	vs, err := q.plan.Next(ctx)
 	if err != nil {
