@@ -152,9 +152,9 @@ func newScalarBinaryOperator(e *parser.BinaryExpr, storage storage.Queryable, mi
 	}
 
 	if e.LHS.Type() == parser.ValueTypeScalar {
-		return binary.NewScalar(model.NewVectorPool(stepsBatch), rhs, lhs, e.Op, true)
+		return binary.NewScalar(rhs, lhs, e.Op, true)
 	}
-	return binary.NewScalar(model.NewVectorPool(stepsBatch), lhs, rhs, e.Op, false)
+	return binary.NewScalar(lhs, rhs, e.Op, false)
 }
 
 func maxDuration(a, b time.Duration) time.Duration {

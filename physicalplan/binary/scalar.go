@@ -5,6 +5,11 @@ package binary
 
 import (
 	"context"
+	"fmt"
+	"github.com/efficientgo/core/errors"
+	"github.com/thanos-community/promql-engine/physicalplan/parse"
+	"gonum.org/v1/gonum/floats"
+	"math"
 	"sync"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -19,21 +24,19 @@ type scalarOperator struct {
 	series     []labels.Labels
 	scalar     float64
 
-	pool           *model.VectorPool
 	numberSelector model.VectorOperator
 	next           model.VectorOperator
-	getOperands    getOperandsFunc
-	operation      operation
+	operation      vectorizedOperation
 }
 
-func NewScalar(pool *model.VectorPool, next model.VectorOperator, numberSelector model.VectorOperator, op parser.ItemType, scalarSideLeft bool) (*scalarOperator, error) {
-	binaryOperation, err := newOperation(op)
+func NewScalar(next model.VectorOperator, numberSelector model.VectorOperator, op parser.ItemType, scalarSideLeft bool) (*scalarOperator, error) {
+	ops := scalarLeftOperators
+	if !scalarSideLeft {
+		ops = scalarRightOperators
+	}
+	vectorizedOperation, err := getVectorizedOperation(op, ops)
 	if err != nil {
 		return nil, err
-	}
-	getOperands := getOperandsScalarRight
-	if scalarSideLeft {
-		getOperands = getOperandsScalarLeft
 	}
 
 	// Cache the result of the number selector since it
@@ -45,12 +48,10 @@ func NewScalar(pool *model.VectorPool, next model.VectorOperator, numberSelector
 	scalar := v[0].Samples[0]
 
 	return &scalarOperator{
-		pool:           pool,
 		next:           next,
 		scalar:         scalar,
 		numberSelector: numberSelector,
-		operation:      binaryOperation,
-		getOperands:    getOperands,
+		operation:      vectorizedOperation,
 	}, nil
 }
 
@@ -76,24 +77,14 @@ func (o *scalarOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 		return nil, err
 	}
 
-	out := o.pool.GetVectorBatch()
 	for _, vector := range in {
-		step := o.pool.GetStepVector(vector.T)
-		for i := range vector.Samples {
-			lhs, rhs := o.getOperands(vector, i, o.scalar)
-			val := o.operation(lhs, rhs)
-			step.Samples = append(step.Samples, val)
-			step.SampleIDs = append(step.SampleIDs, vector.SampleIDs[i])
-		}
-		out = append(out, step)
-		o.next.GetPool().PutStepVector(vector)
+		o.operation(o.scalar, vector.Samples)
 	}
-	o.next.GetPool().PutVectors(in)
-	return out, nil
+	return in, nil
 }
 
 func (o *scalarOperator) GetPool() *model.VectorPool {
-	return o.pool
+	return o.next.GetPool()
 }
 
 func (o *scalarOperator) loadSeries(ctx context.Context) error {
@@ -108,15 +99,68 @@ func (o *scalarOperator) loadSeries(ctx context.Context) error {
 	}
 
 	o.series = series
+
 	return nil
 }
 
-type getOperandsFunc func(v model.StepVector, i int, scalar float64) (float64, float64)
+type vectorizedOperation func(float64, []float64)
 
-func getOperandsScalarLeft(v model.StepVector, i int, scalar float64) (float64, float64) {
-	return scalar, v.Samples[i]
+var scalarRightOperators = map[int]vectorizedOperation{
+	parser.ADD: floats.AddConst,
+	parser.SUB: func(f float64, vector []float64) { floats.AddConst(-f, vector) },
+	parser.MUL: floats.Scale,
+	parser.DIV: func(f float64, vector []float64) { floats.Scale(1/f, vector) },
+	parser.POW: func(f float64, vector []float64) {
+		for i := range vector {
+			vector[i] = math.Pow(vector[i], f)
+		}
+	},
+	parser.MOD: func(f float64, vector []float64) {
+		for i := range vector {
+			vector[i] = float64(int64(vector[i]) % (int64(f)))
+		}
+	},
+	parser.AT: func(f float64, vector []float64) {
+		for i := range vector {
+			vector[i] = math.Atan2(vector[i], f)
+		}
+	},
 }
 
-func getOperandsScalarRight(v model.StepVector, i int, scalar float64) (float64, float64) {
-	return v.Samples[i], scalar
+var scalarLeftOperators = map[int]vectorizedOperation{
+	parser.ADD: floats.AddConst,
+	parser.SUB: func(f float64, vector []float64) {
+		floats.Scale(-1, vector)
+		floats.AddConst(f, vector)
+	},
+	parser.MUL: floats.Scale,
+	parser.DIV: func(f float64, vector []float64) {
+		for i := range vector {
+			vector[i] = f / vector[i]
+		}
+	},
+	parser.POW: func(f float64, vector []float64) {
+		for i := range vector {
+			vector[i] = math.Pow(f, vector[i])
+		}
+	},
+	parser.MOD: func(f float64, vector []float64) {
+		for i := range vector {
+			vector[i] = math.Mod(f, vector[i])
+		}
+	},
+	parser.ATAN2: func(f float64, vector []float64) {
+		for i := range vector {
+			vector[i] = math.Atan2(f, vector[i])
+		}
+	},
+}
+
+func getVectorizedOperation(expr parser.ItemType, ops map[int]vectorizedOperation) (vectorizedOperation, error) {
+	if o, ok := ops[int(expr)]; ok {
+		return o, nil
+	}
+	t := parser.ItemTypeStr[expr]
+	msg := fmt.Sprintf("operation not supported: %s", t)
+	return nil, errors.Wrap(parse.ErrNotSupportedExpr, msg)
 }

@@ -73,7 +73,7 @@ bench-old: benchmarks
 .PHONY: bench-new
 bench-new: benchmarks
 	@echo "Benchmarking new engine"
-	@go test ./... -bench 'BenchmarkRangeQuery/.*/new_engine'  -run none -count 10 | sed -u 's/\/new_engine//' > benchmarks/new.out
+	@go test ./... -bench 'BenchmarkRangeQuery/vector_selector/new_engine'  -run none -count 20 | sed -u 's/\/new_engine//' > benchmarks/new.out
 
 .PHONY: benchmark
 benchmark: bench-old bench-new

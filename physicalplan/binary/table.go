@@ -5,8 +5,8 @@ package binary
 
 import (
 	"fmt"
-
 	"github.com/efficientgo/core/errors"
+	"math"
 
 	"github.com/thanos-community/promql-engine/physicalplan/parse"
 
@@ -94,20 +94,24 @@ func (t *table) execBinaryOperation(lhs model.StepVector, rhs model.StepVector) 
 	return step
 }
 
-type operation func(lhs float64, rhs float64) float64
+type operation func(lhs, rhs float64) float64
 
-var operations = map[string]operation{
-	"+": func(lhs float64, rhs float64) float64 { return lhs + rhs },
-	"-": func(lhs float64, rhs float64) float64 { return lhs - rhs },
-	"*": func(lhs float64, rhs float64) float64 { return lhs * rhs },
-	"/": func(lhs float64, rhs float64) float64 { return lhs / rhs },
+var operations = map[int]operation{
+	parser.ADD:   func(lhs, rhs float64) float64 { return lhs + rhs },
+	parser.SUB:   func(lhs, rhs float64) float64 { return lhs - rhs },
+	parser.MUL:   func(lhs, rhs float64) float64 { return lhs * rhs },
+	parser.DIV:   func(lhs, rhs float64) float64 { return lhs / rhs },
+	parser.POW:   func(lhs, rhs float64) float64 { return math.Pow(lhs, rhs) },
+	parser.MOD:   func(lhs, rhs float64) float64 { return math.Mod(lhs, rhs) },
+	parser.ATAN2: func(lhs, rhs float64) float64 { return math.Atan2(lhs, rhs) },
 }
 
 func newOperation(expr parser.ItemType) (operation, error) {
-	t := parser.ItemTypeStr[expr]
-	if o, ok := operations[t]; ok {
+	if o, ok := operations[int(expr)]; ok {
 		return o, nil
 	}
+
+	t := parser.ItemTypeStr[expr]
 	msg := fmt.Sprintf("operation not supported: %s", t)
 	return nil, errors.Wrap(parse.ErrNotSupportedExpr, msg)
 }

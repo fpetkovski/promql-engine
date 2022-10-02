@@ -358,14 +358,28 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 			load: `load 30s
 				foo{method="get", code="500"} 1+1.1x30
 				foo{method="get", code="404"} 1+2.2x20`,
-			query: `sum(foo) * 2`,
+			query: `sum(foo) / 2`,
 		},
 		{
 			name: "binary operation with vector and scalar on the left",
 			load: `load 30s
 				foo{method="get", code="500"} 1+1.1x30
 				foo{method="get", code="404"} 1+2.2x20`,
-			query: `2 * sum(foo)`,
+			query: `2 / sum(foo)`,
+		},
+		{
+			name: "power operation with vector and scalar on the left",
+			load: `load 30s
+				foo{method="get", code="500"} 1+1.1x30
+				foo{method="get", code="404"} 1+2.2x20`,
+			query: `2 ^ sum(foo)`,
+		},
+		{
+			name: "module operation with vector and scalar on the left",
+			load: `load 30s
+				foo{method="get", code="500"} 1+1.1x30
+				foo{method="get", code="404"} 1+2.2x20`,
+			query: `30 % sum(foo)`,
 		},
 		{
 			name: "complex binary operation",
@@ -463,19 +477,19 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 
 				for _, disableFallback := range []bool{false, true} {
 					t.Run(fmt.Sprintf("disableFallback=%v", disableFallback), func(t *testing.T) {
-						newEngine := engine.New(engine.Opts{EngineOpts: opts, DisableFallback: disableFallback})
-						q1, err := newEngine.NewRangeQuery(test.Storage(), nil, tc.query, tc.start, tc.end, step)
-						testutil.Ok(t, err)
-
-						newResult := q1.Exec(context.Background())
-						testutil.Ok(t, newResult.Err)
-
 						oldEngine := promql.NewEngine(opts)
 						q2, err := oldEngine.NewRangeQuery(test.Storage(), nil, tc.query, tc.start, tc.end, step)
 						testutil.Ok(t, err)
 
 						oldResult := q2.Exec(context.Background())
 						testutil.Ok(t, oldResult.Err)
+
+						newEngine := engine.New(engine.Opts{EngineOpts: opts, DisableFallback: disableFallback})
+						q1, err := newEngine.NewRangeQuery(test.Storage(), nil, tc.query, tc.start, tc.end, step)
+						testutil.Ok(t, err)
+
+						newResult := q1.Exec(context.Background())
+						testutil.Ok(t, newResult.Err)
 
 						testutil.Equals(t, oldResult, newResult)
 					})
