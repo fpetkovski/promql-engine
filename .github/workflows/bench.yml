@@ -1,0 +1,35 @@
+name: Bench
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Run tests
+    env:
+      GOBIN: /tmp/.bin
+    steps:
+    - name: Check out code into the Go module directory.
+      uses: actions/checkout@v3
+
+    - name: Install Go.
+      uses: actions/setup-go@v3
+      with:
+        go-version-file: .go-version
+        cache: true
+
+    - name: Run unit tests
+      run: |
+        make bench-new
+        mv benchmarks/new.out benchmark.txt
+        git config --global user.name 'github-action-benchmark'
+        git config --global user.email 'github@users.noreply.github.com'
+        git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY
+        git checkout main
+        git commit -am "Update latest benchmark"
+        git push
