@@ -31,6 +31,7 @@ import (
 	"github.com/thanos-community/promql-engine/execution/model"
 	"github.com/thanos-community/promql-engine/execution/parse"
 	"github.com/thanos-community/promql-engine/logicalplan"
+	"github.com/thanos-community/promql-engine/physicalplan"
 )
 
 type QueryType int
@@ -57,11 +58,14 @@ type Opts struct {
 }
 
 func (o Opts) getLogicalOptimizers() []logicalplan.Optimizer {
+	var optimizers []logicalplan.Optimizer
 	if o.LogicalOptimizers == nil {
-		return logicalplan.DefaultOptimizers
+		optimizers = logicalplan.DefaultOptimizers
+	} else {
+		optimizers = o.LogicalOptimizers
 	}
 
-	return o.LogicalOptimizers
+	return append(optimizers, physicalplan.DefaultOptimizers(runtime.GOMAXPROCS(0)/2)...)
 }
 
 type remoteEngine struct {
@@ -213,6 +217,7 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 		e.queries.WithLabelValues("true").Inc()
 		return e.prom.NewRangeQuery(q, opts, qs, start, end, step)
 	}
+
 	e.queries.WithLabelValues("false").Inc()
 	if err != nil {
 		return nil, err

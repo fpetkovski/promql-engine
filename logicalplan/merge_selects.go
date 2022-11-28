@@ -43,7 +43,7 @@ func extractSelectors(selectors matcherHeap, expr parser.Expr) {
 }
 
 func replaceMatchers(selectors matcherHeap, expr *parser.Expr) {
-	traverse(expr, func(node *parser.Expr) {
+	TraverseDFS(expr, func(node *parser.Expr) {
 		e, ok := (*node).(*parser.VectorSelector)
 		if !ok {
 			return

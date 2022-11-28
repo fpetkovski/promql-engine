@@ -1527,7 +1527,6 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 					t.Run(fmt.Sprintf("disableOptimizers=%v", disableOptimizers), func(t *testing.T) {
 						for _, disableFallback := range []bool{false, true} {
 							t.Run(fmt.Sprintf("disableFallback=%v", disableFallback), func(t *testing.T) {
-
 								optimizers := logicalplan.AllOptimizers
 								if disableOptimizers {
 									optimizers = logicalplan.NoOptimizers
@@ -1549,6 +1548,8 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 								defer q2.Close()
 
 								oldResult := q2.Exec(context.Background())
+								roundValues(oldResult)
+								roundValues(newResult)
 								if oldResult.Err == nil {
 									testutil.Ok(t, newResult.Err)
 									if hasNaNs(oldResult) {

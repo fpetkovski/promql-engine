@@ -15,7 +15,7 @@ import (
 type SortMatchers struct{}
 
 func (m SortMatchers) Optimize(expr parser.Expr) parser.Expr {
-	traverse(&expr, func(node *parser.Expr) {
+	TraverseDFS(&expr, func(node *parser.Expr) {
 		e, ok := (*node).(*parser.VectorSelector)
 		if !ok {
 			return

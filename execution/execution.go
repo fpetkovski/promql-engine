@@ -17,7 +17,6 @@
 package execution
 
 import (
-	"runtime"
 	"sort"
 	"time"
 
@@ -43,6 +42,7 @@ import (
 	engstore "github.com/thanos-community/promql-engine/execution/storage"
 	"github.com/thanos-community/promql-engine/execution/unary"
 	"github.com/thanos-community/promql-engine/logicalplan"
+	"github.com/thanos-community/promql-engine/physicalplan"
 	"github.com/thanos-community/promql-engine/query"
 )
 
@@ -77,15 +77,64 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 		start, end := getTimeRangesForVectorSelector(e, opts, 0)
 		hints.Start = start
 		hints.End = end
-		filter := storage.GetSelector(start, end, opts.Step.Milliseconds(), e.LabelMatchers, hints)
-		return newShardedVectorSelector(filter, opts, e.Offset)
+		selector := storage.GetSelector(start, end, opts.Step.Milliseconds(), e.LabelMatchers, hints)
+		return scan.NewVectorSelector(model.NewVectorPool(stepsBatch), selector, opts, e.Offset, 0, 1), nil
 
 	case *logicalplan.FilteredSelector:
 		start, end := getTimeRangesForVectorSelector(e.VectorSelector, opts, 0)
 		hints.Start = start
 		hints.End = end
-		selector := storage.GetFilteredSelector(start, end, opts.Step.Milliseconds(), e.LabelMatchers, e.Filters, hints)
-		return newShardedVectorSelector(selector, opts, e.Offset)
+		filter := storage.GetFilteredSelector(start, end, opts.Step.Milliseconds(), e.LabelMatchers, e.Filters, hints)
+		return scan.NewVectorSelector(model.NewVectorPool(stepsBatch), filter, opts, e.Offset, 0, 1), nil
+
+	case *physicalplan.ShardedVectorSelector:
+		start, end := getTimeRangesForVectorSelector(e.VectorSelector, opts, 0)
+		hints.Start = start
+		hints.End = end
+		filter := storage.GetSelector(start, end, opts.Step.Milliseconds(), e.LabelMatchers, hints)
+		return scan.NewVectorSelector(model.NewVectorPool(stepsBatch), filter, opts, e.Offset, e.Shard.Index, e.Shard.Total), nil
+
+	case *physicalplan.Coalesce:
+		operators := make([]model.VectorOperator, len(e.Expressions))
+		for i := range operators {
+			operator, err := newOperator(e.Expressions[i], storage, opts, hints)
+			if err != nil {
+				return nil, err
+			}
+			operators[i] = operator
+		}
+		return exchange.NewCoalesce(model.NewVectorPool(stepsBatch), operators...), nil
+
+	case *physicalplan.Concurrent:
+		operator, err := newOperator(e.Expr, storage, opts, hints)
+		if err != nil {
+			return nil, err
+		}
+		return exchange.NewConcurrent(operator, e.Buffer), nil
+
+	case *physicalplan.ShardedMatrixSelector:
+		m := e.MatrixSelector
+		vs, filters, err := unpackVectorSelector(m)
+		if err != nil {
+			return nil, err
+		}
+
+		start, end := getTimeRangesForVectorSelector(vs, opts, m.Range)
+		hints.Start = start
+		hints.End = end
+		hints.Range = m.Range.Milliseconds()
+		hints.Func = e.Function.Name
+		hints.Grouping = nil
+		hints.By = false
+
+		filter := storage.GetFilteredSelector(start, end, opts.Step.Milliseconds(), vs.LabelMatchers, filters, hints)
+
+		f, err := function.NewFunctionCall(e.Call.Func)
+		if err != nil {
+			return nil, err
+		}
+
+		return scan.NewMatrixSelector(model.NewVectorPool(stepsBatch), filter, f, e.Call, opts, m.Range, vs.Offset, e.Shard.Index, e.Shard.Total), nil
 
 	case *parser.Call:
 		hints.Func = e.Func.Name
@@ -132,21 +181,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 				hints.Range = t.Range.Milliseconds()
 				filter := storage.GetFilteredSelector(start, end, opts.Step.Milliseconds(), vs.LabelMatchers, filters, hints)
 
-				numShards := runtime.GOMAXPROCS(0) / 2
-				if numShards < 1 {
-					numShards = 1
-				}
-
-				operators := make([]model.VectorOperator, 0, numShards)
-				for i := 0; i < numShards; i++ {
-					operator := exchange.NewConcurrent(
-						scan.NewMatrixSelector(model.NewVectorPool(stepsBatch), filter, call, e, opts, t.Range, vs.Offset, i, numShards),
-						2,
-					)
-					operators = append(operators, operator)
-				}
-
-				return exchange.NewCoalesce(model.NewVectorPool(stepsBatch), operators...), nil
+				return scan.NewMatrixSelector(model.NewVectorPool(stepsBatch), filter, call, e, opts, t.Range, vs.Offset, 0, 1), nil
 			}
 		}
 
@@ -166,13 +201,13 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 		hints.Func = e.Op.String()
 		hints.Grouping = e.Grouping
 		hints.By = !e.Without
-		var paramOp model.VectorOperator
 
 		next, err := newOperator(e.Expr, storage, opts, hints)
 		if err != nil {
 			return nil, err
 		}
 
+		var paramOp model.VectorOperator
 		if e.Param != nil {
 			paramOp, err = newOperator(e.Param, storage, opts, hints)
 			if err != nil {
@@ -276,22 +311,6 @@ func unpackVectorSelector(t *parser.MatrixSelector) (*parser.VectorSelector, []*
 	default:
 		return nil, nil, parse.ErrNotSupportedExpr
 	}
-}
-
-func newShardedVectorSelector(selector engstore.SeriesSelector, opts *query.Options, offset time.Duration) (model.VectorOperator, error) {
-	numShards := runtime.GOMAXPROCS(0) / 2
-	if numShards < 1 {
-		numShards = 1
-	}
-	operators := make([]model.VectorOperator, 0, numShards)
-	for i := 0; i < numShards; i++ {
-		operator := exchange.NewConcurrent(
-			scan.NewVectorSelector(
-				model.NewVectorPool(stepsBatch), selector, opts, offset, i, numShards), 2)
-		operators = append(operators, operator)
-	}
-
-	return exchange.NewCoalesce(model.NewVectorPool(stepsBatch), operators...), nil
 }
 
 func newVectorBinaryOperator(e *parser.BinaryExpr, selectorPool *engstore.SelectorPool, opts *query.Options, hints storage.SelectHints) (model.VectorOperator, error) {

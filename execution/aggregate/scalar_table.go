@@ -54,7 +54,6 @@ func newScalarTable(inputSampleIDs []uint64, outputs []*model.Series, newAccumul
 
 func (t *scalarTable) aggregate(arg float64, vector model.StepVector) {
 	t.reset(arg)
-
 	for i := range vector.Samples {
 		t.addSample(vector.T, vector.SampleIDs[i], vector.Samples[i])
 	}

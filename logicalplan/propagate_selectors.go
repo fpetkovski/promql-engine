@@ -15,7 +15,7 @@ import (
 type PropagateMatchersOptimizer struct{}
 
 func (m PropagateMatchersOptimizer) Optimize(expr parser.Expr) parser.Expr {
-	traverse(&expr, func(expr *parser.Expr) {
+	TraverseDFS(&expr, func(expr *parser.Expr) {
 		binOp, ok := (*expr).(*parser.BinaryExpr)
 		if !ok {
 			return

@@ -16,7 +16,6 @@ import (
 
 	"github.com/thanos-community/promql-engine/execution/model"
 	"github.com/thanos-community/promql-engine/execution/parse"
-	"github.com/thanos-community/promql-engine/worker"
 )
 
 type aggregate struct {
@@ -36,7 +35,6 @@ type aggregate struct {
 	series         []labels.Labels
 	newAccumulator newAccumulatorFunc
 	stepsBatch     int
-	workers        worker.Group
 }
 
 func NewHashAggregate(
@@ -67,7 +65,6 @@ func NewHashAggregate(
 		stepsBatch:     stepsBatch,
 		newAccumulator: newAccumulator,
 	}
-	a.workers = worker.NewGroup(stepsBatch, a.workerTask)
 
 	return a, nil
 }
@@ -114,7 +111,6 @@ func (a *aggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 	if in == nil {
 		return nil, nil
 	}
-	defer a.next.GetPool().PutVectors(in)
 
 	a.once.Do(func() { err = a.initializeTables(ctx) })
 	if err != nil {
@@ -138,19 +134,11 @@ func (a *aggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 
 	result := a.vectorPool.GetVectorBatch()
 	for i, vector := range in {
-		if err = a.workers[i].Send(a.params[i], vector); err != nil {
-			return nil, err
-		}
-	}
-
-	for i, vector := range in {
-		output, err := a.workers[i].GetOutput()
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, output)
+		a.tables[i].aggregate(a.params[i], vector)
+		result = append(result, a.tables[i].toVector(a.vectorPool))
 		a.next.GetPool().PutStepVector(vector)
 	}
+	a.next.GetPool().PutVectors(in)
 
 	return result, nil
 }
@@ -172,15 +160,8 @@ func (a *aggregate) initializeTables(ctx context.Context) error {
 	}
 	a.tables = tables
 	a.series = series
-	a.workers.Start(ctx)
 
 	return nil
-}
-
-func (a *aggregate) workerTask(workerID int, arg float64, vector model.StepVector) model.StepVector {
-	table := a.tables[workerID]
-	table.aggregate(arg, vector)
-	return table.toVector(a.vectorPool)
 }
 
 func (a *aggregate) initializeVectorizedTables(ctx context.Context) ([]aggregateTable, []labels.Labels, error) {

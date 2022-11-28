@@ -54,7 +54,17 @@ func (p *plan) Expr() parser.Expr {
 	return p.expr
 }
 
-func traverse(expr *parser.Expr, transform func(*parser.Expr)) {
+var matchAll = func(expr *parser.Expr) bool { return true }
+
+func TraverseDFS(expr *parser.Expr, transform func(*parser.Expr)) {
+	TraverseDFSWithPredicate(expr, matchAll, transform)
+}
+
+func TraverseDFSWithPredicate(expr *parser.Expr, predicate func(expr *parser.Expr) bool, transform func(*parser.Expr)) {
+	if !predicate(expr) {
+		return
+	}
+
 	switch node := (*expr).(type) {
 	case *parser.StepInvariantExpr:
 		transform(&node.Expr)
@@ -63,22 +73,26 @@ func traverse(expr *parser.Expr, transform func(*parser.Expr)) {
 	case *parser.MatrixSelector:
 		transform(&node.VectorSelector)
 	case *parser.AggregateExpr:
+		TraverseDFSWithPredicate(&node.Param, predicate, transform)
+		TraverseDFSWithPredicate(&node.Expr, predicate, transform)
 		transform(expr)
-		traverse(&node.Expr, transform)
 	case *parser.Call:
-		for _, n := range node.Args {
-			traverse(&n, transform)
+		for i := range node.Args {
+			TraverseDFSWithPredicate(&node.Args[i], predicate, transform)
 		}
-	case *parser.BinaryExpr:
 		transform(expr)
-		traverse(&node.LHS, transform)
-		traverse(&node.RHS, transform)
+	case *parser.BinaryExpr:
+		TraverseDFSWithPredicate(&node.LHS, predicate, transform)
+		TraverseDFSWithPredicate(&node.RHS, predicate, transform)
+		transform(expr)
 	case *parser.UnaryExpr:
-		traverse(&node.Expr, transform)
+		TraverseDFSWithPredicate(&node.Expr, predicate, transform)
 	case *parser.ParenExpr:
-		traverse(&node.Expr, transform)
+		TraverseDFSWithPredicate(&node.Expr, predicate, transform)
 	case *parser.SubqueryExpr:
-		traverse(&node.Expr, transform)
+		TraverseDFSWithPredicate(&node.Expr, predicate, transform)
+	default:
+		transform(expr)
 	}
 }
 
