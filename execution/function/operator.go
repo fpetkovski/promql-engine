@@ -201,7 +201,21 @@ func (o *functionOperator) Next(ctx context.Context) ([]model.StepVector, error)
 			vector.Samples[0] = math.NaN()
 			continue
 		}
+		if len(vectors[batchIndex].HistogramSamples) > 0 && o.funcExpr.Func.Name == "histogram_sum" {
+			vectors[batchIndex].Samples = append(vectors[batchIndex].Samples, vector.HistogramSamples[0].Sum)
+			vectors[batchIndex].SampleIDs = vector.SampleIDs[:1]
+			vectors[batchIndex].HistogramSamples = nil
+			// vector.Samples[0] = math.NaN()
+			continue
+		}
 
+		if len(vectors[batchIndex].HistogramSamples) > 0 && o.funcExpr.Func.Name == "histogram_count" {
+			vectors[batchIndex].Samples = append(vectors[batchIndex].Samples, vector.HistogramSamples[0].Count)
+			vectors[batchIndex].SampleIDs = vector.SampleIDs[:1]
+			vectors[batchIndex].HistogramSamples = nil
+			// vector.Samples[0] = math.NaN()
+			continue
+		}
 		for i := range vector.Samples {
 			o.pointBuf[0].V = vector.Samples[i]
 			// Call function by separately passing major input and scalars.

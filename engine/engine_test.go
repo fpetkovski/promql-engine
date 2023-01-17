@@ -2914,12 +2914,28 @@ func TestSparseHistogram(t *testing.T) {
 		name       string
 		count      int
 		seriesName string
+		labels     []string
 		query      string
 	}{
+		{
+			name:       "histogram_sum() with sparse histogram",
+			count:      200,
+			seriesName: "sparse_histogram_series",
+			labels:     []string{"test", "a", "test2", "b"},
+			query:      "histogram_sum(rate(sparse_histogram_series[1m]))",
+		},
+		{
+			name:       "histogram_count() with sparse histogram",
+			count:      120,
+			seriesName: "sparse_histogram_series",
+			labels:     []string{"test", "a", "test2", "b"},
+			query:      "histogram_count(rate(sparse_histogram_series[1m]))",
+		},
 		{
 			name:       "histogram_quantile(.80) with sparse histogram",
 			count:      100,
 			seriesName: "sparse_histogram_series",
+			labels:     []string{"test", "a", "test2", "b"},
 			query:      "histogram_quantile(.80,rate(sparse_histogram_series[1m]))",
 		},
 		{
@@ -2949,7 +2965,8 @@ func TestSparseHistogram(t *testing.T) {
 			defer test.Close()
 
 			// Building Sparse Histograms
-			lbls := labels.FromStrings("__name__", tc.seriesName)
+			tc.labels = append(tc.labels, "__name__", tc.seriesName)
+			lbls := labels.FromStrings(tc.labels...)
 			app := test.Storage().Appender(context.TODO())
 			for i, h := range tsdb.GenerateTestHistograms(100) {
 				_, err := app.AppendHistogram(0, lbls, int64(i)*int64(15*time.Second/time.Millisecond), h)

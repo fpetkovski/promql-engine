@@ -331,6 +331,14 @@ var Funcs = map[string]FunctionCall{
 			},
 		}
 	},
+	"histogram_sum": func(f FunctionArgs) promql.Sample {
+		// This is handled specially by operator.
+		return promql.Sample{}
+	},
+	"histogram_count": func(f FunctionArgs) promql.Sample {
+		// This is handled specially by operator.
+		return promql.Sample{}
+	},
 	"clamp": func(f FunctionArgs) promql.Sample {
 		if len(f.Points) == 0 || len(f.ScalarPoints) < 2 {
 			return InvalidSample
