@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+
 	"github.com/thanos-community/promql-engine/api"
 
 	"github.com/efficientgo/core/testutil"
@@ -1181,6 +1184,15 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 			http_requests_total{pod="nginx-2"} 2+3x10`,
 			query: `histogram_quantile(0.9, http_requests_total)`,
 		},
+		{
+			name: "histogram quantile on partially malformed data",
+			load: `load 30s
+			http_requests_total{pod="nginx-1", le="1"} 1+3x10
+			http_requests_total{pod="nginx-2", le="2"} 2+3x10
+			http_requests_total{pod="nginx-3"} 3+3x10
+			http_requests_total{pod="nginx-4"} 4+3x10`,
+			query: `histogram_quantile(0.9, http_requests_total)`,
+		},
 		// TODO: uncomment once support for testing NaNs is added.
 		/*
 			{
@@ -1395,7 +1407,7 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 								oldResult := q2.Exec(context.Background())
 								if oldResult.Err == nil {
 									testutil.Ok(t, newResult.Err)
-									testutil.Equals(t, oldResult, newResult)
+									testutil.WithGoCmp(cmp.Options{cmpopts.EquateNaNs()}).Equals(t, oldResult, newResult)
 								} else {
 									testutil.NotOk(t, newResult.Err)
 								}

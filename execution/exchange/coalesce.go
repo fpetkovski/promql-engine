@@ -110,11 +110,8 @@ func (c *coalesceOperator) Next(ctx context.Context) ([]model.StepVector, error)
 				if len(in[i].Samples) > 0 {
 					out[i].T = in[i].T
 				}
-				if len(in[i].HistogramSamples) > 0 {
-					out[i].HistogramSamples = append(out[i].HistogramSamples, in[i].HistogramSamples...)
-				} else {
-					out[i].Samples = append(out[i].Samples, in[i].Samples...)
-				}
+				out[i].HistogramSamples = append(out[i].HistogramSamples, in[i].HistogramSamples...)
+				out[i].Samples = append(out[i].Samples, in[i].Samples...)
 				out[i].SampleIDs = append(out[i].SampleIDs, in[i].SampleIDs...)
 				o.GetPool().PutStepVector(in[i])
 			}

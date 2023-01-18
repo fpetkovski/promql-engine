@@ -312,14 +312,10 @@ loop:
 							H: vector.HistogramSamples[i],
 						})
 					} else {
-						if math.IsNaN(vector.Samples[i]) {
-							continue
-						}
 						series[s].Points = append(series[s].Points, promql.Point{
 							T: vector.T,
 							V: vector.Samples[i],
 						})
-
 					}
 				}
 				q.Query.exec.GetPool().PutStepVector(vector)

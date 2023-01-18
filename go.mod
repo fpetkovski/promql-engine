@@ -4,7 +4,7 @@ go 1.19
 
 require (
 	github.com/cespare/xxhash/v2 v2.2.0
-	github.com/efficientgo/core v1.0.0-rc.0
+	github.com/efficientgo/core v1.0.0-rc.2
 	github.com/go-kit/log v0.2.1
 	github.com/prometheus/client_golang v1.14.0
 	github.com/prometheus/prometheus v0.41.0
@@ -37,6 +37,7 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
+	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/grafana/regexp v0.0.0-20221122212121-6b5c0a4cb7fd // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect

@@ -118,6 +118,12 @@ func (o *histogramOperator) processInputSeries(vectors []model.StepVector) ([]mo
 	out := o.pool.GetVectorBatch()
 	for stepIndex, vector := range vectors {
 		step := o.pool.GetStepVector(vector.T)
+		if len(vector.HistogramSamples) > 0 && len(vector.Samples) > 0 {
+			step.SampleIDs = append(step.SampleIDs, 0)
+			step.Samples = append(step.Samples, math.NaN())
+			continue
+		}
+
 		if len(vector.HistogramSamples) > 0 {
 			// Deal with the sparse histograms.
 			for i, sample := range vector.HistogramSamples {
@@ -130,7 +136,7 @@ func (o *histogramOperator) processInputSeries(vectors []model.StepVector) ([]mo
 			for i, seriesID := range vector.SampleIDs {
 				outputSeries := o.outputIndex[seriesID]
 				// This means that it has an invalid `le` label.
-				if outputSeries == nil {
+				if outputSeries == nil || outputSeries.upperBound == 0 {
 					continue
 				}
 				outputSeriesID := outputSeries.outputID
