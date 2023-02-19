@@ -4,10 +4,31 @@
 package model
 
 import (
+	"arena"
 	"sync"
 
 	"github.com/prometheus/prometheus/model/histogram"
 )
+
+type PoolFactory struct {
+	pools []*VectorPool
+}
+
+func NewPoolFactory() *PoolFactory {
+	return &PoolFactory{}
+}
+
+func (p *PoolFactory) NewPool(stepsBatch int) *VectorPool {
+	pool := NewVectorPool(stepsBatch)
+	p.pools = append(p.pools, pool)
+	return pool
+}
+
+func (p *PoolFactory) Close() {
+	for _, pool := range p.pools {
+		pool.memArena.Free()
+	}
+}
 
 type VectorPool struct {
 	vectors sync.Pool
@@ -16,25 +37,31 @@ type VectorPool struct {
 	samples    sync.Pool
 	sampleIDs  sync.Pool
 	histograms sync.Pool
+
+	memArena *arena.Arena
 }
 
 func NewVectorPool(stepsBatch int) *VectorPool {
-	pool := &VectorPool{}
+	memBuffer := arena.NewArena()
+
+	pool := &VectorPool{
+		memArena: memBuffer,
+	}
 	pool.vectors = sync.Pool{
 		New: func() any {
-			sv := make([]StepVector, 0, stepsBatch)
+			sv := arena.MakeSlice[StepVector](memBuffer, 0, stepsBatch)
 			return &sv
 		},
 	}
 	pool.samples = sync.Pool{
 		New: func() any {
-			samples := make([]float64, 0, pool.stepSize)
+			samples := arena.MakeSlice[float64](memBuffer, 0, pool.stepSize)
 			return &samples
 		},
 	}
 	pool.sampleIDs = sync.Pool{
 		New: func() any {
-			sampleIDs := make([]uint64, 0, pool.stepSize)
+			sampleIDs := arena.MakeSlice[uint64](memBuffer, 0, pool.stepSize)
 			return &sampleIDs
 		},
 	}
@@ -46,6 +73,11 @@ func NewVectorPool(stepsBatch int) *VectorPool {
 	}
 
 	return pool
+}
+
+func (p *VectorPool) Close() error {
+	p.memArena.Free()
+	return nil
 }
 
 func (p *VectorPool) GetVectorBatch() []StepVector {

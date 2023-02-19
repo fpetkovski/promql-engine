@@ -170,7 +170,8 @@ func (e *compatibilityEngine) NewInstantQuery(q storage.Queryable, opts *promql.
 	lplan := logicalplan.New(expr, ts, ts)
 	lplan = lplan.Optimize(e.logicalOptimizers)
 
-	exec, err := execution.New(lplan.Expr(), q, ts, ts, 0, e.lookbackDelta)
+	pools := model.NewPoolFactory()
+	exec, err := execution.New(lplan.Expr(), pools, q, ts, ts, 0, e.lookbackDelta)
 	if e.triggerFallback(err) {
 		e.queries.WithLabelValues("true").Inc()
 		return e.prom.NewInstantQuery(q, opts, qs, ts)
@@ -186,6 +187,7 @@ func (e *compatibilityEngine) NewInstantQuery(q storage.Queryable, opts *promql.
 
 	return &compatibilityQuery{
 		Query:      &Query{exec: exec, opts: opts},
+		pools:      pools,
 		engine:     e,
 		expr:       expr,
 		ts:         ts,
@@ -208,7 +210,8 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 	lplan := logicalplan.New(expr, start, end)
 	lplan = lplan.Optimize(e.logicalOptimizers)
 
-	exec, err := execution.New(lplan.Expr(), q, start, end, step, e.lookbackDelta)
+	pools := model.NewPoolFactory()
+	exec, err := execution.New(lplan.Expr(), pools, q, start, end, step, e.lookbackDelta)
 	if e.triggerFallback(err) {
 		e.queries.WithLabelValues("true").Inc()
 		return e.prom.NewRangeQuery(q, opts, qs, start, end, step)
@@ -224,6 +227,7 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 
 	return &compatibilityQuery{
 		Query:  &Query{exec: exec, opts: opts},
+		pools:  pools,
 		engine: e,
 		expr:   expr,
 		t:      RangeQuery,
@@ -318,6 +322,7 @@ func (s resultSort) comparer(samples *promql.Vector) func(i int, j int) bool {
 type compatibilityQuery struct {
 	*Query
 	engine     *compatibilityEngine
+	pools      *model.PoolFactory
 	expr       parser.Expr
 	ts         time.Time // Empty for range queries.
 	t          QueryType
@@ -481,7 +486,10 @@ func (q *compatibilityQuery) Stats() *stats.Statistics {
 	return &stats.Statistics{Timers: stats.NewQueryTimers(), Samples: stats.NewQuerySamples(enablePerStepStats)}
 }
 
-func (q *compatibilityQuery) Close() { q.Cancel() }
+func (q *compatibilityQuery) Close() {
+	q.pools.Close()
+	q.Cancel()
+}
 
 func (q *compatibilityQuery) String() string { return q.expr.String() }
 
