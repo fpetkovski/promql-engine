@@ -260,6 +260,14 @@ func BenchmarkRangeQuery(b *testing.B) {
 			query: `sort_desc(http_requests_total)`,
 			test:  sixHourDataset,
 		},
+		{
+			name:  "absent and exists",
+			query: `absent(http_requests_total)`,
+		},
+		{
+			name:  "absent and doesnt exist",
+			query: `absent(nonexistent)`,
+		},
 	}
 
 	for _, tc := range cases {

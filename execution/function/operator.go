@@ -81,6 +81,27 @@ func (o *noArgFunctionOperator) Next(_ context.Context) ([]model.StepVector, err
 }
 
 func NewFunctionOperator(funcExpr *parser.Call, call FunctionCall, nextOps []model.VectorOperator, stepsBatch int, opts *query.Options) (model.VectorOperator, error) {
+	// 'absent' is implemented with its own operator.
+	if funcExpr.Func.Name == "absent" {
+		interval := opts.Step.Milliseconds()
+		// We set interval to be at least 1.
+		if interval == 0 {
+			interval = 1
+		}
+
+		op := &absentOperator{
+			mint:        opts.Start.UnixMilli(),
+			maxt:        opts.End.UnixMilli(),
+			currentStep: opts.Start.UnixMilli(),
+			step:        interval,
+			next:        nextOps[0],
+			stepsBatch:  stepsBatch,
+			funcExpr:    funcExpr,
+			pool:        model.NewVectorPool(stepsBatch),
+		}
+		return op, nil
+	}
+
 	// Short-circuit functions that take no args. Their only input is the step's timestamp.
 	if len(nextOps) == 0 {
 		interval := opts.Step.Milliseconds()
