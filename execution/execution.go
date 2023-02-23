@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/util/stats"
 
 	"github.com/thanos-community/promql-engine/execution/remote"
 
@@ -50,7 +51,13 @@ const stepsBatch = 10
 
 // New creates new physical query execution for a given query expression which represents logical plan.
 // TODO(bwplotka): Add definition (could be parameters for each execution operator) we can optimize - it would represent physical plan.
-func New(expr parser.Expr, queryable storage.Queryable, mint, maxt time.Time, step, lookbackDelta time.Duration) (model.VectorOperator, error) {
+func New(
+	expr parser.Expr,
+	queryable storage.Queryable,
+	mint, maxt time.Time,
+	step, lookbackDelta time.Duration,
+	stats *stats.Statistics,
+) (model.VectorOperator, error) {
 	opts := &query.Options{
 		Start:         mint,
 		End:           maxt,
@@ -65,10 +72,10 @@ func New(expr parser.Expr, queryable storage.Queryable, mint, maxt time.Time, st
 		// TODO(fpetkovski): Adjust the step for sub-queries once they are supported.
 		Step: step.Milliseconds(),
 	}
-	return newOperator(expr, selectorPool, opts, hints)
+	return newOperator(expr, selectorPool, opts, hints, stats)
 }
 
-func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.Options, hints storage.SelectHints) (model.VectorOperator, error) {
+func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.Options, hints storage.SelectHints, stats *stats.Statistics) (model.VectorOperator, error) {
 	switch e := expr.(type) {
 	case *parser.NumberLiteral:
 		return scan.NewNumberLiteralSelector(model.NewVectorPool(stepsBatch), opts, e.Val), nil
@@ -78,14 +85,14 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 		hints.Start = start
 		hints.End = end
 		filter := storage.GetSelector(start, end, opts.Step.Milliseconds(), e.LabelMatchers, hints)
-		return newShardedVectorSelector(filter, opts, e.Offset)
+		return newShardedVectorSelector(filter, opts, stats, e.Offset)
 
 	case *logicalplan.FilteredSelector:
 		start, end := getTimeRangesForVectorSelector(e.VectorSelector, opts, 0)
 		hints.Start = start
 		hints.End = end
 		selector := storage.GetFilteredSelector(start, end, opts.Step.Milliseconds(), e.LabelMatchers, e.Filters, hints)
-		return newShardedVectorSelector(selector, opts, e.Offset)
+		return newShardedVectorSelector(selector, opts, stats, e.Offset)
 
 	case *parser.Call:
 		hints.Func = e.Func.Name
@@ -95,7 +102,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 		if e.Func.Name == "histogram_quantile" {
 			nextOperators := make([]model.VectorOperator, len(e.Args))
 			for i := range e.Args {
-				next, err := newOperator(e.Args[i], storage, opts, hints)
+				next, err := newOperator(e.Args[i], storage, opts, hints, stats)
 				if err != nil {
 					return nil, err
 				}
@@ -140,7 +147,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 				operators := make([]model.VectorOperator, 0, numShards)
 				for i := 0; i < numShards; i++ {
 					operator := exchange.NewConcurrent(
-						scan.NewMatrixSelector(model.NewVectorPool(stepsBatch), filter, call, e, opts, t.Range, vs.Offset, i, numShards),
+						scan.NewMatrixSelector(model.NewVectorPool(stepsBatch), filter, call, e, opts, stats, t.Range, vs.Offset, i, numShards),
 						2,
 					)
 					operators = append(operators, operator)
@@ -153,7 +160,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 		// Does not have matrix arg so create functionOperator normally.
 		nextOperators := make([]model.VectorOperator, len(e.Args))
 		for i := range e.Args {
-			next, err := newOperator(e.Args[i], storage, opts, hints)
+			next, err := newOperator(e.Args[i], storage, opts, hints, stats)
 			if err != nil {
 				return nil, err
 			}
@@ -168,13 +175,13 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 		hints.By = !e.Without
 		var paramOp model.VectorOperator
 
-		next, err := newOperator(e.Expr, storage, opts, hints)
+		next, err := newOperator(e.Expr, storage, opts, hints, stats)
 		if err != nil {
 			return nil, err
 		}
 
 		if e.Param != nil {
-			paramOp, err = newOperator(e.Param, storage, opts, hints)
+			paramOp, err = newOperator(e.Param, storage, opts, hints, stats)
 			if err != nil {
 				return nil, err
 			}
@@ -194,20 +201,20 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 
 	case *parser.BinaryExpr:
 		if e.LHS.Type() == parser.ValueTypeScalar || e.RHS.Type() == parser.ValueTypeScalar {
-			return newScalarBinaryOperator(e, storage, opts, hints)
+			return newScalarBinaryOperator(e, storage, opts, hints, stats)
 		}
 
-		return newVectorBinaryOperator(e, storage, opts, hints)
+		return newVectorBinaryOperator(e, storage, opts, hints, stats)
 
 	case *parser.ParenExpr:
-		return newOperator(e.Expr, storage, opts, hints)
+		return newOperator(e.Expr, storage, opts, hints, stats)
 
 	case *parser.StringLiteral:
 		// TODO(saswatamcode): This requires separate model with strings.
 		return nil, errors.Wrapf(parse.ErrNotImplemented, "got: %s", e)
 
 	case *parser.UnaryExpr:
-		next, err := newOperator(e.Expr, storage, opts, hints)
+		next, err := newOperator(e.Expr, storage, opts, hints, stats)
 		if err != nil {
 			return nil, err
 		}
@@ -227,7 +234,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 		case *parser.NumberLiteral:
 			return scan.NewNumberLiteralSelector(model.NewVectorPool(stepsBatch), opts, t.Val), nil
 		}
-		next, err := newOperator(e.Expr, storage, opts.WithEndTime(opts.Start), hints)
+		next, err := newOperator(e.Expr, storage, opts.WithEndTime(opts.Start), hints, stats)
 		if err != nil {
 			return nil, err
 		}
@@ -244,7 +251,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 
 		operators := make([]model.VectorOperator, len(e.Expressions))
 		for i, expr := range e.Expressions {
-			operator, err := newOperator(expr, storage, opts, hints)
+			operator, err := newOperator(expr, storage, opts, hints, stats)
 			if err != nil {
 				return nil, err
 			}
@@ -260,7 +267,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 			return nil, err
 		}
 
-		return exchange.NewConcurrent(remote.NewExecution(qry, model.NewVectorPool(stepsBatch), opts), 2), nil
+		return exchange.NewConcurrent(remote.NewExecution(qry, model.NewVectorPool(stepsBatch), opts, stats), 2), nil
 
 	default:
 		return nil, errors.Wrapf(parse.ErrNotSupportedExpr, "got: %s", e)
@@ -278,7 +285,7 @@ func unpackVectorSelector(t *parser.MatrixSelector) (*parser.VectorSelector, []*
 	}
 }
 
-func newShardedVectorSelector(selector engstore.SeriesSelector, opts *query.Options, offset time.Duration) (model.VectorOperator, error) {
+func newShardedVectorSelector(selector engstore.SeriesSelector, opts *query.Options, stats *stats.Statistics, offset time.Duration) (model.VectorOperator, error) {
 	numShards := runtime.GOMAXPROCS(0) / 2
 	if numShards < 1 {
 		numShards = 1
@@ -287,31 +294,31 @@ func newShardedVectorSelector(selector engstore.SeriesSelector, opts *query.Opti
 	for i := 0; i < numShards; i++ {
 		operator := exchange.NewConcurrent(
 			scan.NewVectorSelector(
-				model.NewVectorPool(stepsBatch), selector, opts, offset, i, numShards), 2)
+				model.NewVectorPool(stepsBatch), selector, opts, stats, offset, i, numShards), 2)
 		operators = append(operators, operator)
 	}
 
 	return exchange.NewCoalesce(model.NewVectorPool(stepsBatch), operators...), nil
 }
 
-func newVectorBinaryOperator(e *parser.BinaryExpr, selectorPool *engstore.SelectorPool, opts *query.Options, hints storage.SelectHints) (model.VectorOperator, error) {
-	leftOperator, err := newOperator(e.LHS, selectorPool, opts, hints)
+func newVectorBinaryOperator(e *parser.BinaryExpr, selectorPool *engstore.SelectorPool, opts *query.Options, hints storage.SelectHints, stats *stats.Statistics) (model.VectorOperator, error) {
+	leftOperator, err := newOperator(e.LHS, selectorPool, opts, hints, stats)
 	if err != nil {
 		return nil, err
 	}
-	rightOperator, err := newOperator(e.RHS, selectorPool, opts, hints)
+	rightOperator, err := newOperator(e.RHS, selectorPool, opts, hints, stats)
 	if err != nil {
 		return nil, err
 	}
 	return binary.NewVectorOperator(model.NewVectorPool(stepsBatch), leftOperator, rightOperator, e.VectorMatching, e.Op, e.ReturnBool)
 }
 
-func newScalarBinaryOperator(e *parser.BinaryExpr, selectorPool *engstore.SelectorPool, opts *query.Options, hints storage.SelectHints) (model.VectorOperator, error) {
-	lhs, err := newOperator(e.LHS, selectorPool, opts, hints)
+func newScalarBinaryOperator(e *parser.BinaryExpr, selectorPool *engstore.SelectorPool, opts *query.Options, hints storage.SelectHints, stats *stats.Statistics) (model.VectorOperator, error) {
+	lhs, err := newOperator(e.LHS, selectorPool, opts, hints, stats)
 	if err != nil {
 		return nil, err
 	}
-	rhs, err := newOperator(e.RHS, selectorPool, opts, hints)
+	rhs, err := newOperator(e.RHS, selectorPool, opts, hints, stats)
 	if err != nil {
 		return nil, err
 	}

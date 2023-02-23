@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -16,6 +17,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/prometheus/util/stats"
 
 	"github.com/thanos-community/promql-engine/execution/function"
 	"github.com/thanos-community/promql-engine/execution/model"
@@ -31,14 +33,14 @@ type matrixScanner struct {
 }
 
 type matrixSelector struct {
-	funcExpr *parser.Call
-	storage  engstore.SeriesSelector
-	call     function.FunctionCall
-	scanners []matrixScanner
-	series   []labels.Labels
-	once     sync.Once
-
+	funcExpr   *parser.Call
+	storage    engstore.SeriesSelector
+	call       function.FunctionCall
+	scanners   []matrixScanner
+	series     []labels.Labels
+	once       sync.Once
 	vectorPool *model.VectorPool
+	stats      *stats.Statistics
 
 	numSteps    int
 	mint        int64
@@ -59,6 +61,7 @@ func NewMatrixSelector(
 	call function.FunctionCall,
 	funcExpr *parser.Call,
 	opts *query.Options,
+	stats *stats.Statistics,
 	selectRange, offset time.Duration,
 	shard, numShard int,
 ) model.VectorOperator {
@@ -68,6 +71,7 @@ func NewMatrixSelector(
 		call:       call,
 		funcExpr:   funcExpr,
 		vectorPool: pool,
+		stats:      stats,
 
 		numSteps: opts.NumSteps(),
 		mint:     opts.Start.UnixMilli(),
@@ -135,6 +139,7 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 			if err != nil {
 				return nil, err
 			}
+			atomic.AddInt64(&o.stats.Samples.TotalSamples, int64(len(rangePoints)))
 
 			// TODO(saswatamcode): Handle multi-arg functions for matrixSelectors.
 			// Also, allow operator to exist independently without being nested

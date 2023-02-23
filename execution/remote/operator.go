@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/util/stats"
 
 	"github.com/thanos-community/promql-engine/execution/model"
 	"github.com/thanos-community/promql-engine/execution/scan"
@@ -22,10 +23,10 @@ type Execution struct {
 	vectorSelector model.VectorOperator
 }
 
-func NewExecution(query promql.Query, pool *model.VectorPool, opts *query.Options) *Execution {
+func NewExecution(query promql.Query, pool *model.VectorPool, opts *query.Options, stats *stats.Statistics) *Execution {
 	return &Execution{
 		query:          query,
-		vectorSelector: scan.NewVectorSelector(pool, newStorageFromQuery(query), opts, 0, 0, 1),
+		vectorSelector: scan.NewVectorSelector(pool, newStorageFromQuery(query), opts, stats, 0, 0, 1),
 	}
 }
 

@@ -74,7 +74,6 @@ func TestVectorSelectorWithGaps(t *testing.T) {
 	testutil.Ok(t, oldResult.Err)
 
 	testutil.Equals(t, oldResult, newResult)
-
 }
 
 func TestQueriesAgainstOldEngine(t *testing.T) {
@@ -1562,6 +1561,7 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 								} else {
 									testutil.NotOk(t, newResult.Err)
 								}
+								testutil.Equals(t, q2.Stats().Samples.TotalSamples, q1.Stats().Samples.TotalSamples)
 							})
 						}
 					})

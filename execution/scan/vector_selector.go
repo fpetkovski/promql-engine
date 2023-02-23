@@ -7,10 +7,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/efficientgo/core/errors"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/prometheus/util/stats"
 
 	"github.com/thanos-community/promql-engine/execution/model"
 	engstore "github.com/thanos-community/promql-engine/execution/storage"
@@ -39,6 +41,8 @@ type vectorSelector struct {
 	once       sync.Once
 	vectorPool *model.VectorPool
 
+	stats *stats.Statistics
+
 	numSteps      int
 	mint          int64
 	maxt          int64
@@ -56,12 +60,14 @@ func NewVectorSelector(
 	pool *model.VectorPool,
 	selector engstore.SeriesSelector,
 	queryOpts *query.Options,
+	stats *stats.Statistics,
 	offset time.Duration,
 	shard, numShards int,
 ) model.VectorOperator {
 	return &vectorSelector{
 		storage:    selector,
 		vectorPool: pool,
+		stats:      stats,
 
 		mint:          queryOpts.Start.UnixMilli(),
 		maxt:          queryOpts.End.UnixMilli(),
@@ -128,6 +134,7 @@ func (o *vectorSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 				} else {
 					vectors[currStep].AppendSample(o.vectorPool, series.signature, v)
 				}
+				atomic.AddInt64(&o.stats.Samples.TotalSamples, 1)
 			}
 			seriesTs += o.step
 		}
@@ -198,5 +205,6 @@ func selectPoint(it *storage.MemoizedSeriesIterator, ts, lookbackDelta, offset i
 	if value.IsStaleNaN(v) {
 		return 0, 0, nil, false, nil
 	}
+
 	return t, v, h, true, nil
 }

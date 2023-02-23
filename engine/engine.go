@@ -170,7 +170,8 @@ func (e *compatibilityEngine) NewInstantQuery(q storage.Queryable, opts *promql.
 	lplan := logicalplan.New(expr, ts, ts)
 	lplan = lplan.Optimize(e.logicalOptimizers)
 
-	exec, err := execution.New(lplan.Expr(), q, ts, ts, 0, e.lookbackDelta)
+	queryStats := &stats.Statistics{Timers: stats.NewQueryTimers(), Samples: stats.NewQuerySamples(opts.EnablePerStepStats)}
+	exec, err := execution.New(lplan.Expr(), q, ts, ts, 0, e.lookbackDelta, queryStats)
 	if e.triggerFallback(err) {
 		e.queries.WithLabelValues("true").Inc()
 		return e.prom.NewInstantQuery(q, opts, qs, ts)
@@ -191,6 +192,7 @@ func (e *compatibilityEngine) NewInstantQuery(q storage.Queryable, opts *promql.
 		ts:         ts,
 		t:          InstantQuery,
 		resultSort: newResultSort(expr),
+		stats:      queryStats,
 	}, nil
 }
 
@@ -208,7 +210,8 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 	lplan := logicalplan.New(expr, start, end)
 	lplan = lplan.Optimize(e.logicalOptimizers)
 
-	exec, err := execution.New(lplan.Expr(), q, start, end, step, e.lookbackDelta)
+	queryStats := &stats.Statistics{Timers: stats.NewQueryTimers(), Samples: stats.NewQuerySamples(true)}
+	exec, err := execution.New(lplan.Expr(), q, start, end, step, e.lookbackDelta, queryStats)
 	if e.triggerFallback(err) {
 		e.queries.WithLabelValues("true").Inc()
 		return e.prom.NewRangeQuery(q, opts, qs, start, end, step)
@@ -227,6 +230,7 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 		engine: e,
 		expr:   expr,
 		t:      RangeQuery,
+		stats:  queryStats,
 	}, nil
 }
 
@@ -324,6 +328,7 @@ type compatibilityQuery struct {
 	resultSort resultSort
 
 	cancel context.CancelFunc
+	stats  *stats.Statistics
 }
 
 func (q *compatibilityQuery) Exec(ctx context.Context) (ret *promql.Result) {
@@ -474,11 +479,7 @@ func (q *compatibilityQuery) Statement() parser.Statement { return nil }
 
 // Stats always returns empty query stats for now to avoid panic.
 func (q *compatibilityQuery) Stats() *stats.Statistics {
-	var enablePerStepStats bool
-	if q.opts != nil {
-		enablePerStepStats = q.opts.EnablePerStepStats
-	}
-	return &stats.Statistics{Timers: stats.NewQueryTimers(), Samples: stats.NewQuerySamples(enablePerStepStats)}
+	return q.stats
 }
 
 func (q *compatibilityQuery) Close() { q.Cancel() }
