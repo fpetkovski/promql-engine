@@ -260,6 +260,8 @@ func isDistributive(expr *parser.Expr) bool {
 		}
 	case *parser.Call:
 		return len(aggr.Args) > 0
+	case *parser.MatrixSelector:
+		return aggr.Range < 3*time.Hour
 	}
 
 	return true

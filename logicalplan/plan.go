@@ -100,7 +100,10 @@ func traverseBottomUp(parent *parser.Expr, current *parser.Expr, transform func(
 	case *parser.VectorSelector:
 		return transform(parent, current)
 	case *parser.MatrixSelector:
-		return transform(parent, &node.VectorSelector)
+		if stop := traverseBottomUp(current, &node.VectorSelector, transform); stop {
+			return stop
+		}
+		return transform(parent, current)
 	case *parser.AggregateExpr:
 		if stop := traverseBottomUp(current, &node.Expr, transform); stop {
 			return stop
