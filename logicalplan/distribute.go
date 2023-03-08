@@ -5,6 +5,7 @@ package logicalplan
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -157,18 +158,26 @@ func newRemoteAggregation(rootAggregation *parser.AggregateExpr, engines []api.R
 // All remote executions are wrapped in a Deduplicate logical node to make sure that results from overlapping engines are deduplicated.
 // TODO(fpetkovski): Prune remote engines based on external labels.
 func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engines []api.RemoteEngine, opts *Opts) Deduplicate {
+	var selectRange time.Duration
+	parser.Inspect(*expr, func(node parser.Node, nodes []parser.Node) error {
+		if matrixSelector, ok := node.(*parser.MatrixSelector); ok {
+			selectRange = matrixSelector.Range
+		}
+		return nil
+	})
+
+	var globalMaxT int64 = math.MinInt64
+	for _, e := range engines {
+		if e.MaxT() > globalMaxT {
+			globalMaxT = e.MaxT()
+		}
+	}
+
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
 	for _, e := range engines {
-		if e.MaxT() < opts.Start.UnixMilli()-opts.LookbackDelta.Milliseconds() {
+		start, keep := getEngineRange(selectRange, opts, e, globalMaxT)
+		if !keep {
 			continue
-		}
-		if e.MinT() > opts.End.UnixMilli() {
-			continue
-		}
-
-		start := opts.Start
-		if e.MinT() > start.UnixMilli() {
-			start = calculateStepAlignedStart(e, opts)
 		}
 
 		remoteQueries = append(remoteQueries, RemoteExecution{
@@ -181,6 +190,39 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 	return Deduplicate{
 		Expressions: remoteQueries,
 	}
+}
+
+func getEngineRange(selectRange time.Duration, opts *Opts, e api.RemoteEngine, globalMaxT int64) (time.Time, bool) {
+	if e.MinT() > opts.End.UnixMilli() {
+		return time.Time{}, false
+	}
+
+	offset := selectRange.Milliseconds()
+	if offset == 0 {
+		offset = opts.LookbackDelta.Milliseconds()
+	}
+
+	queryStart := opts.Start
+	if e.MaxT() == globalMaxT && e.MinT() > opts.Start.UnixMilli()-offset {
+		// Instant query
+		if opts.Step.Milliseconds() == 0 {
+			return time.Time{}, false
+		}
+
+		stepsToAdd := (e.MinT() - opts.Start.UnixMilli() + offset) / opts.Step.Milliseconds()
+		queryStart = queryStart.Add(opts.Step * time.Duration(stepsToAdd))
+		//queryStart = queryStart.Add(selectRange)
+	}
+
+	if e.MinT() > queryStart.UnixMilli() {
+		queryStart = calculateStepAlignedStart(e, opts)
+	}
+
+	if queryStart.UnixMilli() < opts.Start.UnixMilli()-offset {
+		return time.Time{}, false
+	}
+
+	return queryStart, true
 }
 
 // calculateStepAlignedStart returns a start time for the query based on the

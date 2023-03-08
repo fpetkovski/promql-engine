@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
@@ -18,16 +19,18 @@ import (
 )
 
 type Execution struct {
-	query          promql.Query
-	opts           *query.Options
-	vectorSelector model.VectorOperator
+	query           promql.Query
+	opts            *query.Options
+	vectorSelector  model.VectorOperator
+	queryRangeStart time.Time
 }
 
-func NewExecution(query promql.Query, pool *model.VectorPool, opts *query.Options) *Execution {
+func NewExecution(query promql.Query, pool *model.VectorPool, queryRangeStart time.Time, opts *query.Options) *Execution {
 	return &Execution{
-		query:          query,
-		opts:           opts,
-		vectorSelector: scan.NewVectorSelector(pool, newStorageFromQuery(query, opts), opts, 0, 0, 1),
+		query:           query,
+		opts:            opts,
+		queryRangeStart: queryRangeStart,
+		vectorSelector:  scan.NewVectorSelector(pool, newStorageFromQuery(query, opts), opts, 0, 0, 1),
 	}
 }
 
@@ -44,7 +47,7 @@ func (e *Execution) GetPool() *model.VectorPool {
 }
 
 func (e *Execution) Explain() (me string, next []model.VectorOperator) {
-	return fmt.Sprintf("[*remoteExec] %s (%d, %d)", e.query, e.opts.Start.Unix(), e.opts.End.Unix()), nil
+	return fmt.Sprintf("[*remoteExec] %s (%d, %d)", e.query, e.queryRangeStart.Unix(), e.opts.End.Unix()), nil
 }
 
 type storageAdapter struct {

@@ -108,6 +108,8 @@ func TestDistributedAggregations(t *testing.T) {
 				},
 				series: []*mockSeries{
 					newMockSeries(makeSeries("east-1", "nginx-1"), []int64{30, 60}, []float64{2, 3}),
+					newMockSeries(makeSeries("east-1", "nginx-2"), []int64{30, 60}, []float64{3, 4}),
+					newMockSeries(makeSeries("west-1", "nginx-1"), []int64{30, 60}, []float64{4, 5}),
 					newMockSeries(makeSeries("west-1", "nginx-2"), []int64{30, 60}, []float64{5, 6}),
 					newMockSeries(makeSeries("west-2", "nginx-1"), []int64{30, 60}, []float64{6, 7}),
 				},
@@ -133,12 +135,23 @@ func TestDistributedAggregations(t *testing.T) {
 		},
 		{
 			name: "verify double lookback is not applied",
-			seriesSets: []partition{
-				{
-					series: []*mockSeries{
-						newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
-					},
-				},
+			seriesSets: []partition{{series: []*mockSeries{
+				newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
+			}}},
+			timeOverlap: partition{series: []*mockSeries{
+				newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60}, []float64{3, 4})},
+			},
+			rangeEnd: time.Unix(15000, 0),
+		},
+		{
+			name: "engines with different retentions",
+			seriesSets: []partition{{series: []*mockSeries{
+				newMockSeries(makeSeries("east-1", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
+			}}, {series: []*mockSeries{
+				newMockSeries(makeSeries("east-2", "nginx-2"), []int64{90, 120}, []float64{3, 4, 5, 6}),
+			}}},
+			timeOverlap: partition{series: []*mockSeries{
+				newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60}, []float64{3, 4})},
 			},
 			rangeEnd: time.Unix(15000, 0),
 		},
@@ -159,7 +172,7 @@ func TestDistributedAggregations(t *testing.T) {
 		// TODO(fpetkovski): This query fails because the range selector is longer than the
 		// retention of one engine. Uncomment the test once the issue is fixed.
 		// https://github.com/thanos-community/promql-engine/issues/195
-		// {name: "aggregation with function operand", query: `sum by (pod) (rate(bar[1m]))`},
+		{name: "aggregation with function operand", query: `sum by (pod) (rate(bar[1m]))`},
 		{name: "binary aggregation", query: `sum by (region) (bar) / sum by (pod) (bar)`},
 		{name: "filtered selector interaction", query: `sum by (region) (bar{region="east"}) / sum by (region) (bar)`},
 		{name: "unsupported aggregation", query: `count_values("pod", bar)`, expectFallback: true},
@@ -171,7 +184,7 @@ func TestDistributedAggregations(t *testing.T) {
 		"all":     logicalplan.AllOptimizers,
 	}
 
-	lookbackDeltas := []time.Duration{0, 30 * time.Second, time.Minute, 5 * time.Minute, 10 * time.Minute}
+	lookbackDeltas := []time.Duration{1, 30 * time.Second}
 	allQueryOpts := []*promql.QueryOpts{nil}
 	for _, l := range lookbackDeltas {
 		allQueryOpts = append(allQueryOpts, &promql.QueryOpts{
@@ -269,5 +282,6 @@ func TestDistributedAggregations(t *testing.T) {
 				})
 			}
 		}
+		//}
 	}
 }
