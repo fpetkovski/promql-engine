@@ -87,7 +87,7 @@ func (m DistributedExecutionOptimizer) Optimize(plan parser.Expr, opts *Opts) pa
 	engines := m.Endpoints.Engines()
 	traverseBottomUp(nil, &plan, func(parent, current *parser.Expr) (stop bool) {
 		// If the current operation is not distributive, stop the traversal.
-		if !isDistributive(current) {
+		if !isDistributive(current, parent) {
 			return true
 		}
 
@@ -113,7 +113,7 @@ func (m DistributedExecutionOptimizer) Optimize(plan parser.Expr, opts *Opts) pa
 		}
 
 		// If the parent operation is distributive, continue the traversal.
-		if isDistributive(parent) {
+		if isDistributive(parent, nil) {
 			return false
 		}
 
@@ -166,8 +166,15 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 		return nil
 	})
 
-	var globalMaxT int64 = math.MinInt64
+	var (
+		globalMinT int64 = math.MaxInt64
+		globalMaxT int64 = math.MinInt64
+	)
+
 	for _, e := range engines {
+		if e.MinT() < globalMinT {
+			globalMinT = e.MinT()
+		}
 		if e.MaxT() > globalMaxT {
 			globalMaxT = e.MaxT()
 		}
@@ -175,7 +182,7 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
 	for _, e := range engines {
-		start, keep := getEngineRange(selectRange, opts, e, globalMaxT)
+		start, keep := getEngineRange(selectRange, opts, e, globalMinT, globalMaxT)
 		if !keep {
 			continue
 		}
@@ -192,49 +199,47 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 	}
 }
 
-func getEngineRange(selectRange time.Duration, opts *Opts, e api.RemoteEngine, globalMaxT int64) (time.Time, bool) {
+func getEngineRange(selectRange time.Duration, opts *Opts, e api.RemoteEngine, globalMinT int64, globalMaxT int64) (time.Time, bool) {
 	if e.MinT() > opts.End.UnixMilli() {
 		return time.Time{}, false
 	}
 
-	offset := selectRange.Milliseconds()
+	offset := selectRange
 	if offset == 0 {
-		offset = opts.LookbackDelta.Milliseconds()
+		offset = opts.LookbackDelta
 	}
 
-	queryStart := opts.Start
-	if e.MaxT() == globalMaxT && e.MinT() > opts.Start.UnixMilli()-offset {
-		// Instant query
+	engineMinTime := time.UnixMilli(e.MinT())
+	requiredMinTime := opts.Start.Add(-offset)
+	if e.MaxT() == globalMaxT && engineMinTime.After(requiredMinTime) {
+		// Instant query.
 		if opts.Step.Milliseconds() == 0 {
 			return time.Time{}, false
 		}
 
-		stepsToAdd := (e.MinT() - opts.Start.UnixMilli() + offset) / opts.Step.Milliseconds()
-		queryStart = queryStart.Add(opts.Step * time.Duration(stepsToAdd))
-		//queryStart = queryStart.Add(selectRange)
+		engineMinTime = calculateStepAlignedStart(opts.Start, opts.End, opts.Step, time.UnixMilli(e.MinT()).Add(offset))
 	}
 
-	if e.MinT() > queryStart.UnixMilli() {
-		queryStart = calculateStepAlignedStart(e, opts)
+	if opts.Step.Milliseconds() == 0 {
+		return opts.Start, true
 	}
 
-	if queryStart.UnixMilli() < opts.Start.UnixMilli()-offset {
-		return time.Time{}, false
+	if engineMinTime.After(opts.Start) {
+		return engineMinTime, true
 	}
-
-	return queryStart, true
+	return opts.Start, true
 }
 
 // calculateStepAlignedStart returns a start time for the query based on the
 // engine min time and the query step size.
 // The purpose of this alignment is to make sure that the steps for the remote query
 // have the same timestamps as the ones for the central query.
-func calculateStepAlignedStart(engine api.RemoteEngine, opts *Opts) time.Time {
-	originalSteps := numSteps(opts.Start, opts.End, opts.Step)
-	remoteQuerySteps := numSteps(time.UnixMilli(engine.MinT()), opts.End, opts.Step)
+func calculateStepAlignedStart(queryStart time.Time, queryEnd time.Time, queryStep time.Duration, engineMinTime time.Time) time.Time {
+	originalSteps := numSteps(queryStart, queryEnd, queryStep)
+	remoteQuerySteps := numSteps(engineMinTime, queryEnd, queryStep)
 
 	stepsToSkip := originalSteps - remoteQuerySteps
-	stepAlignedStartTime := opts.Start.UnixMilli() + stepsToSkip*opts.Step.Milliseconds()
+	stepAlignedStartTime := queryStart.UnixMilli() + stepsToSkip*queryStep.Milliseconds()
 
 	return time.UnixMilli(stepAlignedStartTime)
 }
@@ -243,7 +248,13 @@ func numSteps(start, end time.Time, step time.Duration) int64 {
 	return (end.UnixMilli()-start.UnixMilli())/step.Milliseconds() + 1
 }
 
-func isDistributive(expr *parser.Expr) bool {
+func isDistributive(expr *parser.Expr, parent *parser.Expr) bool {
+	if parent != nil {
+		if matrixSelector, ok := (*parent).(*parser.MatrixSelector); ok {
+			return matrixSelector.Range < 3*time.Hour
+		}
+	}
+
 	if expr == nil {
 		return false
 	}
@@ -260,8 +271,6 @@ func isDistributive(expr *parser.Expr) bool {
 		}
 	case *parser.Call:
 		return len(aggr.Args) > 0
-	case *parser.MatrixSelector:
-		return aggr.Range < 3*time.Hour
 	}
 
 	return true

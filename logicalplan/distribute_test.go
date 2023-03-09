@@ -4,6 +4,7 @@
 package logicalplan
 
 import (
+	"math"
 	"regexp"
 	"testing"
 	"time"
@@ -28,6 +29,11 @@ func TestDistributedExecution(t *testing.T) {
 sum by (pod) (dedup(
   remote(sum by (pod, region) (rate(http_requests_total[5m]))), 
   remote(sum by (pod, region) (rate(http_requests_total[5m])))))`,
+		},
+		{
+			name:     "sum-rate with a range window larger than the theshold",
+			expr:     `sum by (pod) (rate(http_requests_total[5h]))`,
+			expected: `sum by (pod) (rate(http_requests_total[5h]))`,
 		},
 		{
 			name: "sum-rate without labels preserves engine labels",
@@ -146,8 +152,8 @@ histogram_quantile(0.5, sum by (le) (dedup(
 	}
 
 	engines := []api.RemoteEngine{
-		newEngineMock(1, []labels.Labels{labels.FromStrings("region", "east")}),
-		newEngineMock(2, []labels.Labels{labels.FromStrings("region", "west")}),
+		newEngineMock(math.MaxInt64, []labels.Labels{labels.FromStrings("region", "east")}),
+		newEngineMock(math.MaxInt64, []labels.Labels{labels.FromStrings("region", "west")}),
 	}
 	optimizers := []Optimizer{DistributedExecutionOptimizer{Endpoints: api.NewStaticEndpoints(engines)}}
 	replacements := map[string]*regexp.Regexp{
@@ -189,5 +195,5 @@ func (e engineMock) LabelSets() []labels.Labels {
 }
 
 func newEngineMock(maxT int64, labelSets []labels.Labels) *engineMock {
-	return &engineMock{maxT: maxT, labelSets: labelSets}
+	return &engineMock{minT: math.MinInt64, maxT: maxT, labelSets: labelSets}
 }
