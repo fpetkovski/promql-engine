@@ -27,6 +27,10 @@ type Opts struct {
 	LookbackDelta time.Duration
 }
 
+func (o Opts) IsInstantQuery() bool {
+	return o.Start == o.End
+}
+
 type Plan interface {
 	Optimize([]Optimizer) Plan
 	Expr() parser.Expr

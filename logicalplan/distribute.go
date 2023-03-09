@@ -166,15 +166,8 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 		return nil
 	})
 
-	var (
-		globalMinT int64 = math.MaxInt64
-		globalMaxT int64 = math.MinInt64
-	)
-
+	var globalMaxT int64 = math.MinInt64
 	for _, e := range engines {
-		if e.MinT() < globalMinT {
-			globalMinT = e.MinT()
-		}
 		if e.MaxT() > globalMaxT {
 			globalMaxT = e.MaxT()
 		}
@@ -182,7 +175,7 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
 	for _, e := range engines {
-		start, keep := getEngineRange(selectRange, opts, e, globalMinT, globalMaxT)
+		start, keep := getStartTimeForEngine(e, opts, selectRange, globalMaxT)
 		if !keep {
 			continue
 		}
@@ -199,47 +192,42 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 	}
 }
 
-func getEngineRange(selectRange time.Duration, opts *Opts, e api.RemoteEngine, globalMinT int64, globalMaxT int64) (time.Time, bool) {
+func getStartTimeForEngine(e api.RemoteEngine, opts *Opts, selectRange time.Duration, globalMaxT int64) (time.Time, bool) {
 	if e.MinT() > opts.End.UnixMilli() {
 		return time.Time{}, false
 	}
 
-	offset := selectRange
-	if offset == 0 {
-		offset = opts.LookbackDelta
-	}
-
+	// A remote engine needs to have sufficient scope to do a lookback from the start of the query range.
 	engineMinTime := time.UnixMilli(e.MinT())
-	requiredMinTime := opts.Start.Add(-offset)
+	lookback := maxDuration(selectRange, opts.LookbackDelta)
+	requiredMinTime := opts.Start.Add(-lookback)
+
+	// Do not adjust the start time for instant queries since it would lead to changing
+	// the user-provided timestamp and sending a result for a different time.
+	if opts.IsInstantQuery() {
+		return opts.Start, e.MaxT() != globalMaxT || engineMinTime.Before(requiredMinTime)
+	}
+
+	// If an engine's min time is before the start time of the query,
+	// scope the query to the engine to the start of the range + the necessary
+	// lookback duration.
 	if e.MaxT() == globalMaxT && engineMinTime.After(requiredMinTime) {
-		// Instant query.
-		if opts.Step.Milliseconds() == 0 {
-			return time.Time{}, false
-		}
-
-		engineMinTime = calculateStepAlignedStart(opts.Start, opts.End, opts.Step, time.UnixMilli(e.MinT()).Add(offset))
+		engineMinTime = calculateStepAlignedStart(opts, time.UnixMilli(e.MinT()).Add(lookback))
 	}
 
-	if opts.Step.Milliseconds() == 0 {
-		return opts.Start, true
-	}
-
-	if engineMinTime.After(opts.Start) {
-		return engineMinTime, true
-	}
-	return opts.Start, true
+	return maxTime(engineMinTime, opts.Start), true
 }
 
 // calculateStepAlignedStart returns a start time for the query based on the
 // engine min time and the query step size.
 // The purpose of this alignment is to make sure that the steps for the remote query
 // have the same timestamps as the ones for the central query.
-func calculateStepAlignedStart(queryStart time.Time, queryEnd time.Time, queryStep time.Duration, engineMinTime time.Time) time.Time {
-	originalSteps := numSteps(queryStart, queryEnd, queryStep)
-	remoteQuerySteps := numSteps(engineMinTime, queryEnd, queryStep)
+func calculateStepAlignedStart(opts *Opts, engineMinTime time.Time) time.Time {
+	originalSteps := numSteps(opts.Start, opts.End, opts.Step)
+	remoteQuerySteps := numSteps(engineMinTime, opts.End, opts.Step)
 
 	stepsToSkip := originalSteps - remoteQuerySteps
-	stepAlignedStartTime := queryStart.UnixMilli() + stepsToSkip*queryStep.Milliseconds()
+	stepAlignedStartTime := opts.Start.UnixMilli() + stepsToSkip*opts.Step.Milliseconds()
 
 	return time.UnixMilli(stepAlignedStartTime)
 }
@@ -274,4 +262,18 @@ func isDistributive(expr *parser.Expr, parent *parser.Expr) bool {
 	}
 
 	return true
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
 }
