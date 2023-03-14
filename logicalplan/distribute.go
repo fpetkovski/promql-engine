@@ -243,8 +243,10 @@ func numSteps(start, end time.Time, step time.Duration) int64 {
 
 func isDistributive(expr *parser.Expr, parent *parser.Expr) bool {
 	var offset time.Duration
-	if vectorSelector, ok := (*expr).(*parser.VectorSelector); ok {
-		offset = vectorSelector.Offset
+	if expr != nil {
+		if vectorSelector, ok := (*expr).(*parser.VectorSelector); ok {
+			offset = vectorSelector.Offset
+		}
 	}
 	var selectRange time.Duration
 	if parent != nil {
