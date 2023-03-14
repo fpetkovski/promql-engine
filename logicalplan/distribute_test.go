@@ -23,6 +23,11 @@ func TestDistributedExecution(t *testing.T) {
 		expected string
 	}{
 		{
+			name:     "selector",
+			expr:     `http_requests_total`,
+			expected: `dedup(remote(http_requests_total), remote(http_requests_total))`,
+		},
+		{
 			name:     "rate",
 			expr:     `rate(http_requests_total[5m])`,
 			expected: `dedup(remote(rate(http_requests_total[5m])), remote(rate(http_requests_total[5m])))`,
@@ -34,11 +39,6 @@ func TestDistributedExecution(t *testing.T) {
 sum by (pod) (dedup(
   remote(sum by (pod, region) (rate(http_requests_total[5m]))), 
   remote(sum by (pod, region) (rate(http_requests_total[5m])))))`,
-		},
-		{
-			name:     "sum-rate with a range window larger than the theshold",
-			expr:     `sum by (pod) (rate(http_requests_total[5h]))`,
-			expected: `sum by (pod) (rate(http_requests_total[5h]))`,
 		},
 		{
 			name: "sum-rate without labels preserves engine labels",
@@ -153,6 +153,18 @@ histogram_quantile(0.5, sum by (le) (dedup(
 			name:     "aggregation with number literal",
 			expr:     `max(foo) - 1`,
 			expected: `max(dedup(remote(max by (region) (foo)), remote(max by (region) (foo)))) - 1`,
+		},
+		{
+			name:     "sum-rate with a range window larger than the threshold",
+			expr:     `sum by (pod) (rate(http_requests_total[2h] offset 1h))`,
+			expected: `sum by (pod) (rate(http_requests_total[2h] offset 1h))`,
+		},
+		{
+			name: "sum-rate with a range window larger lower the threshold",
+			expr: `sum by (pod) (rate(http_requests_total[1h] offset 1h))`,
+			expected: `sum by (pod) (dedup(
+remote(sum by (pod, region) (rate(http_requests_total[1h] offset 1h))), 
+remote(sum by (pod, region) (rate(http_requests_total[1h] offset 1h)))))`,
 		},
 	}
 
