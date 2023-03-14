@@ -238,7 +238,7 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 
 	// Use same check as Prometheus for range queries.
 	if expr.Type() != parser.ValueTypeVector && expr.Type() != parser.ValueTypeScalar {
-		return nil, errors.Newf("invalid expression type %q for range Query, must be Scalar or instant Vector", parser.DocumentedType(expr.Type()))
+		return nil, errors.Newf("invalid expression type %q for range query, must be Scalar or instant Vector", parser.DocumentedType(expr.Type()))
 	}
 
 	if opts == nil {
@@ -415,6 +415,9 @@ func (q *compatibilityQuery) Exec(ctx context.Context) (ret *promql.Result) {
 	if err != nil {
 		return newErrResult(ret, err)
 	}
+	if containsDuplicateLabelSet(resultSeries) {
+		return newErrResult(ret, errors.New("vector cannot contain metrics with the same labelset"))
+	}
 
 	series := make([]promql.Series, len(resultSeries))
 	for i := 0; i < len(resultSeries); i++ {
@@ -525,6 +528,24 @@ func newErrResult(r *promql.Result, err error) *promql.Result {
 		r.Err = err
 	}
 	return r
+}
+
+func containsDuplicateLabelSet(series []labels.Labels) bool {
+	if len(series) <= 1 {
+		return false
+	}
+	var h uint64
+	buf := make([]byte, 0)
+	seen := make(map[uint64]struct{}, len(series))
+	for i := range series {
+		buf = buf[:0]
+		h, buf = series[i].HashWithoutLabels(buf)
+		if _, ok := seen[h]; ok {
+			return true
+		}
+		seen[h] = struct{}{}
+	}
+	return false
 }
 
 func (q *compatibilityQuery) Statement() parser.Statement { return nil }

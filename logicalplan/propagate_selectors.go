@@ -21,8 +21,8 @@ func (m PropagateMatchersOptimizer) Optimize(expr parser.Expr, _ *Opts) parser.E
 			return
 		}
 
-		// The optimizer cannot be applied to comparison operations.
-		if binOp.Op.IsComparisonOperator() {
+		// The optimizer cannot be applied to comparison operations or 'atan2'.
+		if binOp.Op.IsComparisonOperator() || binOp.Op.String() == "atan2" {
 			return
 		}
 
