@@ -23,6 +23,11 @@ func TestDistributedExecution(t *testing.T) {
 		expected string
 	}{
 		{
+			name:     "rate",
+			expr:     `rate(http_requests_total[5m])`,
+			expected: `dedup(remote(rate(http_requests_total[5m])), remote(rate(http_requests_total[5m])))`,
+		},
+		{
 			name: "sum-rate",
 			expr: `sum by (pod) (rate(http_requests_total[5m]))`,
 			expected: `

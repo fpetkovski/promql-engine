@@ -159,12 +159,17 @@ func newRemoteAggregation(rootAggregation *parser.AggregateExpr, engines []api.R
 // TODO(fpetkovski): Prune remote engines based on external labels.
 func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engines []api.RemoteEngine, opts *Opts) Deduplicate {
 	var selectRange time.Duration
+	var offset time.Duration
 	parser.Inspect(*expr, func(node parser.Node, nodes []parser.Node) error {
 		if matrixSelector, ok := node.(*parser.MatrixSelector); ok {
 			selectRange = matrixSelector.Range
 		}
+		if vectorSelector, ok := node.(*parser.VectorSelector); ok {
+			offset = vectorSelector.Offset
+		}
 		return nil
 	})
+	offset = offset + selectRange
 
 	var globalMaxT int64 = math.MinInt64
 	for _, e := range engines {
@@ -175,7 +180,7 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
 	for _, e := range engines {
-		start, keep := getStartTimeForEngine(e, opts, selectRange, globalMaxT)
+		start, keep := getStartTimeForEngine(e, opts, offset, globalMaxT)
 		if !keep {
 			continue
 		}
