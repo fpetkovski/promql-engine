@@ -266,7 +266,10 @@ func isDistributive(expr *parser.Expr, parent *parser.Expr) bool {
 		// Binary expressions are joins and need to be done across the entire
 		// data set. This is why we cannot push down aggregations where
 		// the operand is a binary expression.
-		return false
+		// The only exception currently is pushing down binary expressions with a constant operand.
+		lhsConstant := isNumberLiteral(aggr.LHS)
+		rhsConstant := isNumberLiteral(aggr.RHS)
+		return lhsConstant || rhsConstant
 	case *parser.AggregateExpr:
 		// Certain aggregations are currently not supported.
 		if _, ok := distributiveAggregations[aggr.Op]; !ok {
@@ -277,6 +280,19 @@ func isDistributive(expr *parser.Expr, parent *parser.Expr) bool {
 	}
 
 	return true
+}
+
+func isNumberLiteral(expr parser.Expr) bool {
+	if _, ok := expr.(*parser.NumberLiteral); ok {
+		return true
+	}
+
+	stepInvariant, ok := expr.(*parser.StepInvariantExpr)
+	if !ok {
+		return false
+	}
+
+	return isNumberLiteral(stepInvariant.Expr)
 }
 
 func maxTime(a, b time.Time) time.Time {

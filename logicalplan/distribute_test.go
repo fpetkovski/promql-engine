@@ -166,6 +166,13 @@ histogram_quantile(0.5, sum by (le) (dedup(
 remote(sum by (pod, region) (rate(http_requests_total[1h] offset 1h))), 
 remote(sum by (pod, region) (rate(http_requests_total[1h] offset 1h)))))`,
 		},
+		{
+			name: "binary expression with constant",
+			expr: `sum by (pod) (rate(http_requests_total[2m]) * 60)`,
+			expected: `sum by (pod) (dedup(
+remote(sum by (pod, region) (rate(http_requests_total[2m]) * 60)), 
+remote(sum by (pod, region) (rate(http_requests_total[2m]) * 60))))`,
+		},
 	}
 
 	engines := []api.RemoteEngine{
