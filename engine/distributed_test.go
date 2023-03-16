@@ -145,11 +145,11 @@ func TestDistributedAggregations(t *testing.T) {
 			seriesSets: []partition{{
 				extLset: []labels.Labels{labels.FromStrings("zone", "us-east1")},
 				series: []*mockSeries{
-					newMockSeries(makeSeries("east-1", "nginx-1"), []int64{30, 60, 90, 120, 150}, []float64{3, 4, 5, 6, 9}),
+					newMockSeries(makeSeries("us-east1", "nginx-1"), []int64{30, 60, 90, 120, 150}, []float64{3, 4, 5, 6, 9}),
 				}}, {
 				extLset: []labels.Labels{labels.FromStrings("zone", "us-east2")},
 				series: []*mockSeries{
-					newMockSeries(makeSeries("east-2", "nginx-2"), []int64{90, 120, 150}, []float64{7, 9, 11}),
+					newMockSeries(makeSeries("us-east2", "nginx-2"), []int64{90, 120, 150}, []float64{7, 9, 11}),
 				},
 			}},
 			timeOverlap: partition{
@@ -158,8 +158,8 @@ func TestDistributedAggregations(t *testing.T) {
 					labels.FromStrings("zone", "us-east2"),
 				},
 				series: []*mockSeries{
-					newMockSeries(makeSeries("east-1", "nginx-1"), []int64{30, 60, 90}, []float64{3, 4, 5}),
-					newMockSeries(makeSeries("east-2", "nginx-2"), []int64{30, 60, 90, 120}, []float64{2, 6, 7, 9}),
+					newMockSeries(makeSeries("us-east1", "nginx-1"), []int64{30, 60, 90}, []float64{3, 4, 5}),
+					newMockSeries(makeSeries("us-east2", "nginx-2"), []int64{30, 60, 90, 120}, []float64{2, 6, 7, 9}),
 				},
 			},
 			rangeEnd: time.Unix(180, 0),
