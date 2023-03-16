@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/thanos-community/promql-engine/api"
@@ -101,6 +102,9 @@ func (m DistributedExecutionOptimizer) Optimize(plan parser.Expr, opts *Opts) pa
 
 			remoteAggregation := newRemoteAggregation(aggr, engines)
 			subQueries := m.distributeQuery(&remoteAggregation, engines, opts)
+			if len(subQueries.Expressions) == 0 {
+				return true
+			}
 			*current = &parser.AggregateExpr{
 				Op:       localAggregation,
 				Expr:     subQueries,
@@ -117,7 +121,11 @@ func (m DistributedExecutionOptimizer) Optimize(plan parser.Expr, opts *Opts) pa
 			return false
 		}
 
-		*current = m.distributeQuery(current, engines, opts)
+		subQueries := m.distributeQuery(current, engines, opts)
+		if len(subQueries.Expressions) == 0 {
+			return true
+		}
+		*current = subQueries
 		return true
 	})
 
@@ -180,6 +188,10 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
 	for _, e := range engines {
+		if !matchesExternalLabelSet(*expr, e.LabelSets()) {
+			continue
+		}
+
 		start, keep := getStartTimeForEngine(e, opts, offset, globalMaxT)
 		if !keep {
 			continue
@@ -279,6 +291,38 @@ func isDistributive(expr *parser.Expr, parent *parser.Expr) bool {
 		return len(aggr.Args) > 0
 	}
 
+	return true
+}
+
+// matchesExternalLabels returns false if given matchers are not matching external labels.
+// If true, matchesExternalLabels also returns Prometheus matchers without those matching external labels.
+func matchesExternalLabelSet(expr parser.Expr, externalLabelSet []labels.Labels) bool {
+	selectorSet := parser.ExtractSelectors(expr)
+	for _, selectors := range selectorSet {
+		hasMatch := false
+		for _, externalLabels := range externalLabelSet {
+			hasMatch = hasMatch || matchesExternalLabels(selectors, externalLabels)
+		}
+		if !hasMatch {
+			return false
+		}
+	}
+
+	return true
+}
+
+// matchesExternalLabels returns false if given matchers are not matching external labels.
+func matchesExternalLabels(ms []*labels.Matcher, externalLabels labels.Labels) bool {
+	if len(externalLabels) == 0 {
+		return true
+	}
+
+	for _, matcher := range ms {
+		extValue := externalLabels.Get(matcher.Name)
+		if extValue != "" && !matcher.Matches(extValue) {
+			return false
+		}
+	}
 	return true
 }
 
