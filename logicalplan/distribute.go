@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/thanos-community/promql-engine/api"
@@ -63,6 +64,18 @@ func (r Deduplicate) PositionRange() parser.PositionRange { return parser.Positi
 func (r Deduplicate) Type() parser.ValueType { return parser.ValueTypeMatrix }
 
 func (r Deduplicate) PromQLExpr() {}
+
+type Noop struct{}
+
+func (r Noop) String() string { return "noop" }
+
+func (r Noop) Pretty(level int) string { return r.String() }
+
+func (r Noop) PositionRange() parser.PositionRange { return parser.PositionRange{} }
+
+func (r Noop) Type() parser.ValueType { return parser.ValueTypeMatrix }
+
+func (r Noop) PromQLExpr() {}
 
 // distributiveAggregations are all PromQL aggregations which support
 // distributed execution.
@@ -156,9 +169,13 @@ func newRemoteAggregation(rootAggregation *parser.AggregateExpr, engines []api.R
 // For each engine which matches the time range of the query, it creates a RemoteExecution scoped to the range of the engine.
 // All remote executions are wrapped in a Deduplicate logical node to make sure that results from overlapping engines are deduplicated.
 // TODO(fpetkovski): Prune remote engines based on external labels.
-func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engines []api.RemoteEngine, opts *Opts) Deduplicate {
+func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engines []api.RemoteEngine, opts *Opts) parser.Expr {
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
 	for _, e := range engines {
+		if !matchesExternalLabelSet(*expr, e.LabelSets()) {
+			continue
+		}
+
 		if e.MaxT() < opts.Start.UnixMilli()-opts.LookbackDelta.Milliseconds() {
 			continue
 		}
@@ -176,6 +193,10 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 			Query:           (*expr).String(),
 			QueryRangeStart: start,
 		})
+	}
+
+	if len(remoteQueries) == 0 {
+		return Noop{}
 	}
 
 	return Deduplicate{
@@ -210,7 +231,10 @@ func isDistributive(expr *parser.Expr) bool {
 		// Binary expressions are joins and need to be done across the entire
 		// data set. This is why we cannot push down aggregations where
 		// the operand is a binary expression.
-		return false
+		// The only exception currently is pushing down binary expressions with a constant operand.
+		lhsConstant := isNumberLiteral(aggr.LHS)
+		rhsConstant := isNumberLiteral(aggr.RHS)
+		return lhsConstant || rhsConstant
 	case *parser.AggregateExpr:
 		// Certain aggregations are currently not supported.
 		if _, ok := distributiveAggregations[aggr.Op]; !ok {
@@ -221,4 +245,49 @@ func isDistributive(expr *parser.Expr) bool {
 	}
 
 	return true
+}
+
+// matchesExternalLabels returns false if given matchers are not matching external labels.
+// If true, matchesExternalLabels also returns Prometheus matchers without those matching external labels.
+func matchesExternalLabelSet(expr parser.Expr, externalLabelSet []labels.Labels) bool {
+	selectorSet := parser.ExtractSelectors(expr)
+	for _, selectors := range selectorSet {
+		hasMatch := false
+		for _, externalLabels := range externalLabelSet {
+			hasMatch = hasMatch || matchesExternalLabels(selectors, externalLabels)
+		}
+		if !hasMatch {
+			return false
+		}
+	}
+
+	return true
+}
+
+// matchesExternalLabels returns false if given matchers are not matching external labels.
+func matchesExternalLabels(ms []*labels.Matcher, externalLabels labels.Labels) bool {
+	if len(externalLabels) == 0 {
+		return true
+	}
+
+	for _, matcher := range ms {
+		extValue := externalLabels.Get(matcher.Name)
+		if extValue != "" && !matcher.Matches(extValue) {
+			return false
+		}
+	}
+	return true
+}
+
+func isNumberLiteral(expr parser.Expr) bool {
+	if _, ok := expr.(*parser.NumberLiteral); ok {
+		return true
+	}
+
+	stepInvariant, ok := expr.(*parser.StepInvariantExpr)
+	if !ok {
+		return false
+	}
+
+	return isNumberLiteral(stepInvariant.Expr)
 }
