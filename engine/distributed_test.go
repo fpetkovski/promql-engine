@@ -201,7 +201,7 @@ func TestDistributedAggregations(t *testing.T) {
 		"all":     logicalplan.AllOptimizers,
 	}
 
-	lookbackDeltas := []time.Duration{0, 30 * time.Second, time.Minute}
+	lookbackDeltas := []time.Duration{0, 30 * time.Second, 5 * time.Minute}
 	allQueryOpts := []*promql.QueryOpts{nil}
 	for _, l := range lookbackDeltas {
 		allQueryOpts = append(allQueryOpts, &promql.QueryOpts{
