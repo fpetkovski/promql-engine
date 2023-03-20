@@ -19,6 +19,8 @@ import (
 )
 
 type Execution struct {
+	storage *storageAdapter
+
 	query           promql.Query
 	opts            *query.Options
 	vectorSelector  model.VectorOperator
@@ -26,11 +28,13 @@ type Execution struct {
 }
 
 func NewExecution(query promql.Query, pool *model.VectorPool, queryRangeStart time.Time, opts *query.Options) *Execution {
+	storage := newStorageFromQuery(query, opts)
 	return &Execution{
+		storage:         storage,
 		query:           query,
 		opts:            opts,
 		queryRangeStart: queryRangeStart,
-		vectorSelector:  scan.NewVectorSelector(pool, newStorageFromQuery(query, opts), opts, 0, 0, 1),
+		vectorSelector:  scan.NewVectorSelector(pool, storage, opts, 0, 0, 1),
 	}
 }
 
@@ -39,7 +43,14 @@ func (e *Execution) Series(ctx context.Context) ([]labels.Labels, error) {
 }
 
 func (e *Execution) Next(ctx context.Context) ([]model.StepVector, error) {
-	return e.vectorSelector.Next(ctx)
+	next, err := e.vectorSelector.Next(ctx)
+	if next == nil {
+		// Closing the storage prematurely can lead to results from the query
+		// engine to be recycled. Because of this, we close the storage only
+		// when we are done with processing all samples returned by the query.
+		e.storage.Close()
+	}
+	return next, err
 }
 
 func (e *Execution) GetPool() *model.VectorPool {
@@ -78,7 +89,6 @@ func (s *storageAdapter) GetSeries(ctx context.Context, _, _ int) ([]engstore.Si
 }
 
 func (s *storageAdapter) executeQuery(ctx context.Context) {
-	defer s.query.Close()
 	result := s.query.Exec(ctx)
 	if result.Err != nil {
 		s.err = result.Err
@@ -106,4 +116,8 @@ func (s *storageAdapter) executeQuery(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (s *storageAdapter) Close() {
+	s.query.Close()
 }

@@ -66,6 +66,18 @@ func (r Deduplicate) Type() parser.ValueType { return parser.ValueTypeMatrix }
 
 func (r Deduplicate) PromQLExpr() {}
 
+type Noop struct{}
+
+func (r Noop) String() string { return "noop" }
+
+func (r Noop) Pretty(level int) string { return r.String() }
+
+func (r Noop) PositionRange() parser.PositionRange { return parser.PositionRange{} }
+
+func (r Noop) Type() parser.ValueType { return parser.ValueTypeMatrix }
+
+func (r Noop) PromQLExpr() {}
+
 // distributiveAggregations are all PromQL aggregations which support
 // distributed execution.
 var distributiveAggregations = map[parser.ItemType]struct{}{
@@ -102,9 +114,6 @@ func (m DistributedExecutionOptimizer) Optimize(plan parser.Expr, opts *Opts) pa
 
 			remoteAggregation := newRemoteAggregation(aggr, engines)
 			subQueries := m.distributeQuery(&remoteAggregation, engines, opts)
-			if len(subQueries.Expressions) == 0 {
-				return true
-			}
 			*current = &parser.AggregateExpr{
 				Op:       localAggregation,
 				Expr:     subQueries,
@@ -121,11 +130,7 @@ func (m DistributedExecutionOptimizer) Optimize(plan parser.Expr, opts *Opts) pa
 			return false
 		}
 
-		subQueries := m.distributeQuery(current, engines, opts)
-		if len(subQueries.Expressions) == 0 {
-			return true
-		}
-		*current = subQueries
+		*current = m.distributeQuery(current, engines, opts)
 		return true
 	})
 
@@ -165,7 +170,11 @@ func newRemoteAggregation(rootAggregation *parser.AggregateExpr, engines []api.R
 // For each engine which matches the time range of the query, it creates a RemoteExecution scoped to the range of the engine.
 // All remote executions are wrapped in a Deduplicate logical node to make sure that results from overlapping engines are deduplicated.
 // TODO(fpetkovski): Prune remote engines based on external labels.
-func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engines []api.RemoteEngine, opts *Opts) Deduplicate {
+func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engines []api.RemoteEngine, opts *Opts) parser.Expr {
+	if isAbsent(*expr) {
+		return m.distributeAbsent(*expr, engines, opts)
+	}
+
 	var selectRange time.Duration
 	var offset time.Duration
 	parser.Inspect(*expr, func(node parser.Node, nodes []parser.Node) error {
@@ -204,6 +213,10 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 		})
 	}
 
+	if len(remoteQueries) == 0 {
+		return Noop{}
+	}
+
 	return Deduplicate{
 		Expressions: remoteQueries,
 	}
@@ -233,6 +246,37 @@ func getStartTimeForEngine(e api.RemoteEngine, opts *Opts, selectRange time.Dura
 	}
 
 	return maxTime(engineMinTime, opts.Start), true
+}
+
+func (m DistributedExecutionOptimizer) distributeAbsent(expr parser.Expr, engines []api.RemoteEngine, opts *Opts) parser.Expr {
+	queries := make(RemoteExecutions, 0, len(engines))
+	for i := range engines {
+		queries = append(queries, RemoteExecution{
+			Engine:          engines[i],
+			Query:           expr.String(),
+			QueryRangeStart: opts.Start,
+		})
+	}
+
+	var rootExpr parser.Expr = queries[0]
+	for i := 1; i < len(queries); i++ {
+		rootExpr = &parser.BinaryExpr{
+			Op:             parser.MUL,
+			LHS:            rootExpr,
+			RHS:            queries[i],
+			VectorMatching: &parser.VectorMatching{},
+		}
+	}
+
+	return rootExpr
+}
+
+func isAbsent(expr parser.Expr) bool {
+	call, ok := expr.(*parser.Call)
+	if !ok {
+		return false
+	}
+	return call.Func.Name == "absent" || call.Func.Name == "absent_over_time"
 }
 
 // calculateStepAlignedStart returns a start time for the query based on the
@@ -269,10 +313,10 @@ func isDistributive(expr *parser.Expr, parent *parser.Expr) bool {
 	if offset+selectRange > 2*time.Hour+30*time.Minute {
 		return false
 	}
-
 	if expr == nil {
 		return false
 	}
+
 	switch aggr := (*expr).(type) {
 	case *parser.BinaryExpr:
 		// Binary expressions are joins and need to be done across the entire
@@ -297,6 +341,10 @@ func isDistributive(expr *parser.Expr, parent *parser.Expr) bool {
 // matchesExternalLabels returns false if given matchers are not matching external labels.
 // If true, matchesExternalLabels also returns Prometheus matchers without those matching external labels.
 func matchesExternalLabelSet(expr parser.Expr, externalLabelSet []labels.Labels) bool {
+	if len(externalLabelSet) == 0 {
+		return true
+	}
+
 	selectorSet := parser.ExtractSelectors(expr)
 	for _, selectors := range selectorSet {
 		hasMatch := false

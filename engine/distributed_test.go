@@ -72,6 +72,10 @@ func TestDistributedAggregations(t *testing.T) {
 		return []string{labels.MetricName, "bar", "zone", zone, "pod", pod}
 	}
 
+	makeSeriesWithName := func(name, zone, pod string) []string {
+		return []string{labels.MetricName, name, "zone", zone, "pod", pod}
+	}
+
 	tests := []struct {
 		name        string
 		seriesSets  []partition
@@ -115,13 +119,17 @@ func TestDistributedAggregations(t *testing.T) {
 		{
 			// Repro for https://github.com/thanos-community/promql-engine/issues/187.
 			name: "series with different ranges in a newer engine",
-			seriesSets: []partition{{
-				series: []*mockSeries{
-					newMockSeries(makeSeries("east-1", "nginx-1"), []int64{60, 90, 120}, []float64{3, 4, 5}),
-					newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
-				}},
+			seriesSets: []partition{
+				{
+					extLset: []labels.Labels{labels.FromStrings("zone", "east-1")},
+					series: []*mockSeries{
+						newMockSeries(makeSeries("east-1", "nginx-1"), []int64{60, 90, 120}, []float64{3, 4, 5}),
+						newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
+					},
+				},
 			},
 			timeOverlap: partition{
+				extLset: []labels.Labels{labels.FromStrings("zone", "east-1"), labels.FromStrings("zone", "west-1")},
 				series: []*mockSeries{
 					newMockSeries(makeSeries("east-1", "nginx-1"), []int64{30, 60}, []float64{2, 3}),
 					newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60}, []float64{3, 4}),
@@ -130,10 +138,13 @@ func TestDistributedAggregations(t *testing.T) {
 		},
 		{
 			name: "verify double lookback is not applied",
-			seriesSets: []partition{{
-				series: []*mockSeries{
-					newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
-				}},
+			seriesSets: []partition{
+				{
+					extLset: []labels.Labels{labels.FromStrings("zone", "east-2")},
+					series: []*mockSeries{
+						newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
+					},
+				},
 			},
 			timeOverlap: partition{series: []*mockSeries{
 				newMockSeries(makeSeries("east-2", "nginx-1"), []int64{30, 60}, []float64{3, 4})},
@@ -163,6 +174,26 @@ func TestDistributedAggregations(t *testing.T) {
 				},
 			},
 			rangeEnd: time.Unix(180, 0),
+		}, {
+			name: "count by __name__ label",
+			seriesSets: []partition{
+				{
+					series: []*mockSeries{
+						newMockSeries(makeSeriesWithName("foo", "east-2", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
+						newMockSeries(makeSeriesWithName("bar", "east-2", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
+					},
+				},
+				{
+					series: []*mockSeries{
+						newMockSeries(makeSeriesWithName("xyz", "east-2", "nginx-1"), []int64{30, 60, 90, 120}, []float64{3, 4, 5, 6}),
+					},
+				},
+			},
+			timeOverlap: partition{series: []*mockSeries{
+				newMockSeries(makeSeriesWithName("foo", "east-2", "nginx-1"), []int64{30, 60}, []float64{3, 4}),
+				newMockSeries(makeSeriesWithName("bar", "east-2", "nginx-1"), []int64{30, 60}, []float64{3, 4}),
+				newMockSeries(makeSeriesWithName("xyz", "east-2", "nginx-1"), []int64{30, 60}, []float64{3, 4}),
+			}},
 		},
 	}
 
@@ -175,14 +206,22 @@ func TestDistributedAggregations(t *testing.T) {
 		{name: "sum with offset", query: `sum by (pod) (bar offset 30s)`},
 		{name: "avg", query: `avg by (pod) (bar)`},
 		{name: "count", query: `count by (pod) (bar)`},
+		{name: "count by __name__", query: `count by (__name__) ({__name__=~".+"})`},
 		{name: "group", query: `group by (pod) (bar)`},
 		{name: "topk", query: `topk by (pod) (1, bar)`},
 		{name: "bottomk", query: `bottomk by (pod) (1, bar)`},
+		{name: "label based pruning with no match", query: `sum by (pod) (bar{zone="north-2"})`},
+		{name: "label based pruning with one match", query: `sum by (pod) (bar{zone="east-1"})`},
 		{name: "double aggregation", query: `max by (pod) (sum by (pod) (bar))`},
 		{name: "aggregation with function operand", query: `sum by (pod) (rate(bar[1m]))`},
+		{name: "binary expression with constant operand", query: `sum by (region) (bar * 60)`},
 		{name: "binary aggregation", query: `sum by (region) (bar) / sum by (pod) (bar)`},
 		{name: "filtered selector interaction", query: `sum by (region) (bar{region="east"}) / sum by (region) (bar)`},
 		{name: "unsupported aggregation", query: `count_values("pod", bar)`, expectFallback: true},
+		{name: "absent_over_time for non-existing metric", query: `absent_over_time(foo[1m])`},
+		{name: "absent_over_time for existing metric", query: `absent_over_time(bar{pod="nginx-1"}[1m])`},
+		{name: "absent for non-existing metric", query: `absent(foo)`},
+		{name: "absent for existing metric", query: `absent(bar{pod="nginx-1"})`},
 	}
 
 	optimizersOpts := map[string][]logicalplan.Optimizer{
@@ -234,9 +273,8 @@ func TestDistributedAggregations(t *testing.T) {
 								t.Run(fmt.Sprintf("withOptimizers=%s", o), func(t *testing.T) {
 									localOpts.LogicalOptimizers = optimizers
 									distOpts := localOpts
-
-									distOpts.DisableFallback = !query.expectFallback
 									distOpts.DebugWriter = os.Stdout
+									distOpts.DisableFallback = !query.expectFallback
 									for _, instantTS := range instantTSs {
 										t.Run(fmt.Sprintf("instant/ts=%d", instantTS.Unix()), func(t *testing.T) {
 											distEngine := engine.NewDistributedEngine(distOpts,
@@ -289,6 +327,5 @@ func TestDistributedAggregations(t *testing.T) {
 				})
 			}
 		}
-		//}
 	}
 }
