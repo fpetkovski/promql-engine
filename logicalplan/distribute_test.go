@@ -179,6 +179,10 @@ remote(sum by (pod, region) (rate(http_requests_total[2m]) * 60))))`,
 			name:     "label based pruning with grouping matches no engines",
 			expr:     `sum by (pod) (rate(http_requests_total{region="south"}[2m]))`,
 			expected: `sum by (pod) (dedup(remote(sum by (pod, region) (rate(http_requests_total{region="south"}[2m])))))`,
+		}, {
+			name:     "absent",
+			expr:     `absent(foo)`,
+			expected: `remote(absent(foo)) * remote(absent(foo))`,
 		},
 	}
 

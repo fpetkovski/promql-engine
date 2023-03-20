@@ -170,6 +170,10 @@ func newRemoteAggregation(rootAggregation *parser.AggregateExpr, engines []api.R
 // All remote executions are wrapped in a Deduplicate logical node to make sure that results from overlapping engines are deduplicated.
 // TODO(fpetkovski): Prune remote engines based on external labels.
 func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engines []api.RemoteEngine, opts *Opts) parser.Expr {
+	if isAbsent(*expr) {
+		return m.distributeAbsent(*expr, engines, opts)
+	}
+
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
 	for _, e := range engines {
 		if !matchesExternalLabelSet(*expr, e.LabelSets()) {
@@ -202,6 +206,37 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 	return Deduplicate{
 		Expressions: remoteQueries,
 	}
+}
+
+func (m DistributedExecutionOptimizer) distributeAbsent(expr parser.Expr, engines []api.RemoteEngine, opts *Opts) parser.Expr {
+	queries := make(RemoteExecutions, 0, len(engines))
+	for i := range engines {
+		queries = append(queries, RemoteExecution{
+			Engine:          engines[i],
+			Query:           expr.String(),
+			QueryRangeStart: opts.Start,
+		})
+	}
+
+	var rootExpr parser.Expr = queries[0]
+	for i := 1; i < len(queries); i++ {
+		rootExpr = &parser.BinaryExpr{
+			Op:             parser.MUL,
+			LHS:            rootExpr,
+			RHS:            queries[i],
+			VectorMatching: &parser.VectorMatching{},
+		}
+	}
+
+	return rootExpr
+}
+
+func isAbsent(expr parser.Expr) bool {
+	call, ok := expr.(*parser.Call)
+	if !ok {
+		return false
+	}
+	return call.Func.Name == "absent" || call.Func.Name == "absent_over_time"
 }
 
 // calculateStepAlignedStart returns a start time for the query based on the
