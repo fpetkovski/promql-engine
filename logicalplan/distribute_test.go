@@ -4,6 +4,7 @@
 package logicalplan
 
 import (
+	"math"
 	"regexp"
 	"testing"
 	"time"
@@ -187,8 +188,8 @@ remote(sum by (pod, region) (rate(http_requests_total[2m]) * 60))))`,
 	}
 
 	engines := []api.RemoteEngine{
-		newEngineMock(1, []labels.Labels{labels.FromStrings("region", "east"), labels.FromStrings("region", "south")}),
-		newEngineMock(2, []labels.Labels{labels.FromStrings("region", "west")}),
+		newEngineMock(math.MaxInt64, []labels.Labels{labels.FromStrings("region", "east"), labels.FromStrings("region", "south")}),
+		newEngineMock(math.MaxInt64, []labels.Labels{labels.FromStrings("region", "west")}),
 	}
 	optimizers := []Optimizer{DistributedExecutionOptimizer{Endpoints: api.NewStaticEndpoints(engines)}}
 	replacements := map[string]*regexp.Regexp{
@@ -230,5 +231,5 @@ func (e engineMock) LabelSets() []labels.Labels {
 }
 
 func newEngineMock(maxT int64, labelSets []labels.Labels) *engineMock {
-	return &engineMock{maxT: maxT, labelSets: labelSets}
+	return &engineMock{minT: math.MinInt64, maxT: maxT, labelSets: labelSets}
 }

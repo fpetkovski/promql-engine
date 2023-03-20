@@ -5,6 +5,7 @@ package logicalplan
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -99,7 +100,7 @@ func (m DistributedExecutionOptimizer) Optimize(plan parser.Expr, opts *Opts) pa
 	engines := m.Endpoints.Engines()
 	traverseBottomUp(nil, &plan, func(parent, current *parser.Expr) (stop bool) {
 		// If the current operation is not distributive, stop the traversal.
-		if !isDistributive(current) {
+		if !isDistributive(current, parent) {
 			return true
 		}
 
@@ -125,7 +126,7 @@ func (m DistributedExecutionOptimizer) Optimize(plan parser.Expr, opts *Opts) pa
 		}
 
 		// If the parent operation is distributive, continue the traversal.
-		if isDistributive(parent) {
+		if isDistributive(parent, nil) {
 			return false
 		}
 
@@ -168,10 +169,29 @@ func newRemoteAggregation(rootAggregation *parser.AggregateExpr, engines []api.R
 // distributeQuery takes a PromQL expression in the form of *parser.Expr and a set of remote engines.
 // For each engine which matches the time range of the query, it creates a RemoteExecution scoped to the range of the engine.
 // All remote executions are wrapped in a Deduplicate logical node to make sure that results from overlapping engines are deduplicated.
-// TODO(fpetkovski): Prune remote engines based on external labels.
 func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engines []api.RemoteEngine, opts *Opts) parser.Expr {
 	if isAbsent(*expr) {
 		return m.distributeAbsent(*expr, engines, opts)
+	}
+
+	var selectRange time.Duration
+	var offset time.Duration
+	parser.Inspect(*expr, func(node parser.Node, nodes []parser.Node) error {
+		if matrixSelector, ok := node.(*parser.MatrixSelector); ok {
+			selectRange = matrixSelector.Range
+		}
+		if vectorSelector, ok := node.(*parser.VectorSelector); ok {
+			offset = vectorSelector.Offset
+		}
+		return nil
+	})
+	offset = offset + selectRange
+
+	var globalMaxT int64 = math.MinInt64
+	for _, e := range engines {
+		if e.MaxT() > globalMaxT {
+			globalMaxT = e.MaxT()
+		}
 	}
 
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
@@ -180,16 +200,9 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 			continue
 		}
 
-		if e.MaxT() < opts.Start.UnixMilli()-opts.LookbackDelta.Milliseconds() {
+		start, keep := getStartTimeForEngine(e, opts, offset, globalMaxT)
+		if !keep {
 			continue
-		}
-		if e.MinT() > opts.End.UnixMilli() {
-			continue
-		}
-
-		start := opts.Start
-		if e.MinT() > start.UnixMilli() {
-			start = calculateStepAlignedStart(e, opts)
 		}
 
 		remoteQueries = append(remoteQueries, RemoteExecution{
@@ -239,13 +252,39 @@ func isAbsent(expr parser.Expr) bool {
 	return call.Func.Name == "absent" || call.Func.Name == "absent_over_time"
 }
 
+func getStartTimeForEngine(e api.RemoteEngine, opts *Opts, selectRange time.Duration, globalMaxT int64) (time.Time, bool) {
+	if e.MinT() > opts.End.UnixMilli() {
+		return time.Time{}, false
+	}
+
+	// A remote engine needs to have sufficient scope to do a lookback from the start of the query range.
+	engineMinTime := time.UnixMilli(e.MinT())
+	lookback := maxDuration(selectRange, opts.LookbackDelta)
+	requiredMinTime := opts.Start.Add(-lookback)
+
+	// Do not adjust the start time for instant queries since it would lead to changing
+	// the user-provided timestamp and sending a result for a different time.
+	if opts.IsInstantQuery() {
+		return opts.Start, e.MaxT() != globalMaxT || engineMinTime.Before(requiredMinTime)
+	}
+
+	// If an engine's min time is before the start time of the query,
+	// scope the query to the engine to the start of the range + the necessary
+	// lookback duration.
+	if e.MaxT() == globalMaxT && engineMinTime.After(requiredMinTime) {
+		engineMinTime = calculateStepAlignedStart(opts, time.UnixMilli(e.MinT()).Add(lookback))
+	}
+
+	return maxTime(engineMinTime, opts.Start), true
+}
+
 // calculateStepAlignedStart returns a start time for the query based on the
 // engine min time and the query step size.
 // The purpose of this alignment is to make sure that the steps for the remote query
 // have the same timestamps as the ones for the central query.
-func calculateStepAlignedStart(engine api.RemoteEngine, opts *Opts) time.Time {
+func calculateStepAlignedStart(opts *Opts, engineMinTime time.Time) time.Time {
 	originalSteps := numSteps(opts.Start, opts.End, opts.Step)
-	remoteQuerySteps := numSteps(time.UnixMilli(engine.MinT()), opts.End, opts.Step)
+	remoteQuerySteps := numSteps(engineMinTime, opts.End, opts.Step)
 
 	stepsToSkip := originalSteps - remoteQuerySteps
 	stepAlignedStartTime := opts.Start.UnixMilli() + stepsToSkip*opts.Step.Milliseconds()
@@ -257,7 +296,23 @@ func numSteps(start, end time.Time, step time.Duration) int64 {
 	return (end.UnixMilli()-start.UnixMilli())/step.Milliseconds() + 1
 }
 
-func isDistributive(expr *parser.Expr) bool {
+func isDistributive(expr *parser.Expr, parent *parser.Expr) bool {
+	var offset time.Duration
+	if expr != nil {
+		if vectorSelector, ok := (*expr).(*parser.VectorSelector); ok {
+			offset = vectorSelector.Offset
+		}
+	}
+	var selectRange time.Duration
+	if parent != nil {
+		if matrixSelector, ok := (*parent).(*parser.MatrixSelector); ok {
+			selectRange = matrixSelector.Range
+		}
+	}
+	if offset+selectRange > 2*time.Hour+30*time.Minute {
+		return false
+	}
+
 	if expr == nil {
 		return false
 	}
@@ -328,3 +383,18 @@ func isNumberLiteral(expr parser.Expr) bool {
 
 	return isNumberLiteral(stepInvariant.Expr)
 }
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
