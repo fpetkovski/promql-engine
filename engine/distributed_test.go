@@ -164,7 +164,8 @@ func TestDistributedAggregations(t *testing.T) {
 					newMockSeries(makeSeriesWithName("xyz", "east-2", "nginx-1"), []int64{30, 60}, []float64{3, 4}),
 				},
 			},
-		}, {
+		},
+		{
 			name: "engines with different retentions",
 			seriesSets: []partition{{
 				extLset: []labels.Labels{labels.FromStrings("zone", "us-east1")},

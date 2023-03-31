@@ -276,7 +276,7 @@ func getStartTimeForEngine(e api.RemoteEngine, opts *Opts, selectRange time.Dura
 		engineMinTime = calculateStepAlignedStart(opts, time.UnixMilli(e.MinT()).Add(lookback))
 	}
 
-	return maxTime(engineMinTime, opts.Start), true
+	return calculateStepAlignedStart(opts, maxTime(engineMinTime, opts.Start)), true
 }
 
 // calculateStepAlignedStart returns a start time for the query based on the
