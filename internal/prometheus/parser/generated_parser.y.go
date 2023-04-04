@@ -3,15 +3,18 @@
 //line promql/parser/generated_parser.y:15
 package parser
 
+import __yyfmt__ "fmt"
+
+//line promql/parser/generated_parser.y:15
+
 import (
-	__yyfmt__ "fmt"
 	"math"
 	"strconv"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/value"
-) //line promql/parser/generated_parser.y:15
+)
 
 //line promql/parser/generated_parser.y:28
 type yySymType struct {
@@ -1491,7 +1494,7 @@ yydefault:
 		{
 			b := labels.NewBuilder(yyDollar[2].labels)
 			b.Set(labels.MetricName, yyDollar[1].item.Val)
-			yyVAL.labels = b.Labels(labels.EmptyLabels())
+			yyVAL.labels = b.Labels()
 		}
 	case 96:
 		yyDollar = yyS[yypt-1 : yypt+1]

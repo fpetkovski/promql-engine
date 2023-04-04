@@ -420,11 +420,11 @@ func (s aggregateResultSort) comparer(samples *promql.Vector) func(i, j int) boo
 		iLb := labels.NewBuilder((*samples)[i].Metric)
 		jLb := labels.NewBuilder((*samples)[j].Metric)
 		if s.groupBy {
-			iLbls = iLb.Keep(s.sortingLabels...).Labels(nil)
-			jLbls = jLb.Keep(s.sortingLabels...).Labels(nil)
+			iLbls = iLb.Keep(s.sortingLabels...).Labels()
+			jLbls = jLb.Keep(s.sortingLabels...).Labels()
 		} else {
-			iLbls = iLb.Del(s.sortingLabels...).Labels(nil)
-			jLbls = jLb.Del(s.sortingLabels...).Labels(nil)
+			iLbls = iLb.Del(s.sortingLabels...).Labels()
+			jLbls = jLb.Del(s.sortingLabels...).Labels()
 		}
 
 		lblsCmp := labels.Compare(iLbls, jLbls)

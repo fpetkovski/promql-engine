@@ -4005,7 +4005,7 @@ func testNativeHistograms(t *testing.T, cases []histogramTestCase, opts promql.E
 							t.Log("Applying comparison with NaN equality.")
 							testutil.WithGoCmp(cmpopts.EquateNaNs()).Equals(t, promVector, newVector)
 						} else {
-							testutil.Equals(t, promVector, newVector)
+							testutil.Equals(t, promVector.String(), newVector.String())
 						}
 					})
 
@@ -4034,7 +4034,7 @@ func testNativeHistograms(t *testing.T, cases []histogramTestCase, opts promql.E
 							t.Log("Applying comparison with NaN equality.")
 							testutil.WithGoCmp(cmpopts.EquateNaNs()).Equals(t, expected, actual)
 						} else {
-							testutil.Equals(t, expected, actual)
+							testutil.Equals(t, expected.String(), actual.String())
 						}
 					})
 				})
