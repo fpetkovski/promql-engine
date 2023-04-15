@@ -26,6 +26,11 @@ func (c errorChan) getError() error {
 	return nil
 }
 
+type operatorVectors struct {
+	operatorID  int
+	stepVectors []model.StepVector
+}
+
 // coalesce is a model.VectorOperator that merges input vectors from multiple downstream operators
 // into a single output vector.
 // coalesce guarantees that samples from different input vectors will be added to the output in the same order
@@ -35,11 +40,10 @@ type coalesce struct {
 	series []labels.Labels
 
 	pool      *model.VectorPool
-	wg        sync.WaitGroup
+	outputWg  sync.WaitGroup
+	inputWg   sync.WaitGroup
 	operators []model.VectorOperator
 
-	// inVectors is an internal per-step cache for references to input vectors.
-	inVectors [][]model.StepVector
 	// sampleOffsets holds per-operator offsets needed to map an input sample ID to an output sample ID.
 	sampleOffsets []uint64
 }
@@ -49,7 +53,6 @@ func NewCoalesce(pool *model.VectorPool, operators ...model.VectorOperator) mode
 		pool:          pool,
 		sampleOffsets: make([]uint64, len(operators)),
 		operators:     operators,
-		inVectors:     make([][]model.StepVector, len(operators)),
 	}
 }
 
@@ -83,15 +86,20 @@ func (c *coalesce) Next(ctx context.Context) ([]model.StepVector, error) {
 		return nil, err
 	}
 
-	var errChan = make(errorChan, len(c.operators))
+	// inVectors is an internal per-step cache for references to input vectors.
+	var inVectors = make(chan operatorVectors, len(c.operators))
+	var inErrs = make(errorChan, len(c.operators))
 	for idx, o := range c.operators {
-		c.wg.Add(1)
+		c.inputWg.Add(1)
 		go func(opIdx int, o model.VectorOperator) {
-			defer c.wg.Done()
+			defer c.inputWg.Done()
 
 			in, err := o.Next(ctx)
 			if err != nil {
-				errChan <- err
+				inErrs <- err
+				return
+			}
+			if len(in) == 0 {
 				return
 			}
 
@@ -104,38 +112,40 @@ func (c *coalesce) Next(ctx context.Context) ([]model.StepVector, error) {
 					vector.HistogramIDs[i] = vector.HistogramIDs[i] + c.sampleOffsets[opIdx]
 				}
 			}
-			c.inVectors[opIdx] = in
+			inVectors <- operatorVectors{operatorID: opIdx, stepVectors: in}
 		}(idx, o)
 	}
-	c.wg.Wait()
-	close(errChan)
 
-	if err := errChan.getError(); err != nil {
+	c.outputWg.Add(1)
+	var out []model.StepVector = nil
+	go func() {
+		defer c.outputWg.Done()
+		for operatorInput := range inVectors {
+			opIdx, vectors := operatorInput.operatorID, operatorInput.stepVectors
+			if out == nil {
+				out = c.pool.GetVectorBatch()
+				for i := 0; i < len(vectors); i++ {
+					out = append(out, c.pool.GetStepVector(vectors[i].T))
+				}
+			}
+			for i := range vectors {
+				out[i].AppendSamples(c.pool, vectors[i].SampleIDs, vectors[i].Samples)
+				out[i].AppendHistograms(c.pool, vectors[i].HistogramIDs, vectors[i].Histograms)
+				c.operators[opIdx].GetPool().PutStepVector(vectors[i])
+			}
+			c.operators[opIdx].GetPool().PutVectors(vectors)
+		}
+	}()
+	// Wait for input operators to finish before closing input channels.
+	c.inputWg.Wait()
+	close(inErrs)
+	close(inVectors)
+	if err := inErrs.getError(); err != nil {
 		return nil, err
 	}
 
-	var out []model.StepVector = nil
-	for opIdx, vectors := range c.inVectors {
-		if len(vectors) > 0 && out == nil {
-			out = c.pool.GetVectorBatch()
-			for i := 0; i < len(vectors); i++ {
-				out = append(out, c.pool.GetStepVector(vectors[i].T))
-			}
-		}
-
-		for i := range vectors {
-			out[i].AppendSamples(c.pool, vectors[i].SampleIDs, vectors[i].Samples)
-			out[i].AppendHistograms(c.pool, vectors[i].HistogramIDs, vectors[i].Histograms)
-			c.operators[opIdx].GetPool().PutStepVector(vectors[i])
-		}
-		c.inVectors[opIdx] = nil
-		c.operators[opIdx].GetPool().PutVectors(vectors)
-	}
-
-	if out == nil {
-		return nil, nil
-	}
-
+	// Wait for output goroutine to finish processing all input vectors.
+	c.outputWg.Wait()
 	return out, nil
 }
 
