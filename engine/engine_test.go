@@ -1651,6 +1651,17 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 				bar 2+2x5`,
 			query: `count by (__name__) ({__name__=~".+"})`,
 		},
+		{
+			name: "scalar with bool",
+			load: `load 30s
+				http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+				http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+				http_requests_total{pod="nginx-3", series="3"} 6+0.8x60
+				http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+				http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+				http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50`,
+			query: `scalar(avg_over_time({__name__="http_requests_total"}[3m])) > bool 0.9464749352949011`,
+		},
 	}
 
 	disableOptimizerOpts := []bool{true, false}
@@ -1698,7 +1709,7 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 								oldResult := q2.Exec(context.Background())
 
 								if oldResult.Err != nil {
-									testutil.NotOk(t, newResult.Err)
+									testutil.NotOk(t, newResult.Err, "expected error "+oldResult.Err.Error())
 									return
 								}
 
@@ -1723,16 +1734,16 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 func hasNaNs(result *promql.Result) bool {
 	switch result := result.Value.(type) {
 	case promql.Matrix:
-		for _, vector := range result {
-			for _, point := range vector.Points {
-				if math.IsNaN(point.V) {
+		for _, series := range result {
+			for _, point := range series.Floats {
+				if math.IsNaN(point.F) {
 					return true
 				}
 			}
 		}
 	case promql.Vector:
-		for _, point := range result {
-			if math.IsNaN(point.V) {
+		for _, sample := range result {
+			if math.IsNaN(sample.F) {
 				return true
 			}
 		}
@@ -2426,11 +2437,9 @@ func TestRateVsXRate(t *testing.T) {
 
 func createSample(t int64, v float64, metric labels.Labels) promql.Sample {
 	return promql.Sample{
-		Point: promql.Point{
-			T: t,
-			V: v,
-			H: nil,
-		},
+		T:      t,
+		F:      v,
+		H:      nil,
 		Metric: metric,
 	}
 }
@@ -2473,6 +2482,12 @@ func TestInstantQuery(t *testing.T) {
 			load:      ``,
 			queryTime: time.Unix(160, 0),
 			query:     "12 + 1",
+		},
+		{
+			name:      "string literal",
+			load:      ``,
+			queryTime: time.Unix(160, 0),
+			query:     "test-string-literal",
 		},
 		{
 			name: "increase plus offset",
@@ -2617,6 +2632,42 @@ func TestInstantQuery(t *testing.T) {
 						http_requests_total{pod="nginx-1"} 1+1x15
 						http_requests_total{pod="nginx-2"} 1+2x18`,
 			query: "avg(http_requests_total)",
+		},
+		{
+			name: "label_join",
+			load: `load 30s
+						http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+						http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+						http_requests_total{pod="nginx-4", series="3"} 5+2.4x50`,
+			queryTime: time.Unix(160, 0),
+			query:     `label_join(http_requests_total{}, "label", "-", "pod", "series")`,
+		},
+		{
+			name: "label_join with non-existing src labels",
+			load: `load 30s
+						http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+						http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+						http_requests_total{pod="nginx-4", series="3"} 5+2.4x50`,
+			queryTime: time.Unix(160, 0),
+			query:     `label_join(http_requests_total{}, "label", "-", "test", "fake")`,
+		},
+		{
+			name: "label_join with overwrite dst label if exists",
+			load: `load 30s
+						http_requests_total{pod="nginx-1", series="1", label="test-1"} 1+1.1x40
+						http_requests_total{pod="nginx-2", series="2", label="test-2"} 2+2.3x50
+						http_requests_total{pod="nginx-4", series="3", label="test-3"} 5+2.4x50`,
+			queryTime: time.Unix(160, 0),
+			query:     `label_join(http_requests_total{}, "label", "-", "pod", "series")`,
+		},
+		{
+			name: "label_join with no src labels provided",
+			load: `load 30s
+						http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+						http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+						http_requests_total{pod="nginx-4", series="3"} 5+2.4x50`,
+			queryTime: time.Unix(160, 0),
+			query:     `label_join(http_requests_total{}, "label", "-")`,
 		},
 		{
 			name: "topk",
@@ -4184,11 +4235,23 @@ func generateFloatHistogramSeries(app storage.Appender, numSeries int, withMixed
 func TestMixedNativeHistogramTypes(t *testing.T) {
 	histograms := tsdbutil.GenerateTestHistograms(2)
 
-	var samples []tsdbutil.Sample
-	samples = append(samples, sample{t: 0, fh: histograms[0].ToFloat()})
-	samples = append(samples, sample{t: 30_000, h: histograms[1]})
+	test, err := promql.NewTest(t, "")
+	testutil.Ok(t, err)
+	defer test.Close()
 
-	series := storage.NewListSeries(labels.Labels{{Name: "__name__", Value: "native_histogram_series"}}, samples)
+	lbls := []string{labels.MetricName, "native_histogram_series"}
+
+	app := test.Storage().Appender(context.TODO())
+	_, err = app.AppendHistogram(0, labels.FromStrings(lbls...), 0, nil, histograms[0].ToFloat())
+	testutil.Ok(t, err)
+	testutil.Ok(t, app.Commit())
+
+	app = test.Storage().Appender(context.TODO())
+	_, err = app.AppendHistogram(0, labels.FromStrings(lbls...), 30_000, histograms[1], nil)
+	testutil.Ok(t, err)
+	testutil.Ok(t, app.Commit())
+
+	testutil.Ok(t, test.Run())
 
 	opts := promql.EngineOpts{
 		Timeout:              1 * time.Hour,
@@ -4204,7 +4267,7 @@ func TestMixedNativeHistogramTypes(t *testing.T) {
 	})
 
 	t.Run("vector_select", func(t *testing.T) {
-		qry, err := engine.NewInstantQuery(storageWithSeries(series), nil, "sum(native_histogram_series)", time.Unix(30, 0))
+		qry, err := engine.NewInstantQuery(test.Queryable(), nil, "sum(native_histogram_series)", time.Unix(30, 0))
 		testutil.Ok(t, err)
 		res := qry.Exec(context.Background())
 		testutil.Ok(t, res.Err)
@@ -4213,11 +4276,12 @@ func TestMixedNativeHistogramTypes(t *testing.T) {
 
 		testutil.Equals(t, 1, len(actual), "expected vector with 1 element")
 		expected := histograms[1].ToFloat()
+		expected.CounterResetHint = histogram.UnknownCounterReset
 		testutil.Equals(t, expected, actual[0].H)
 	})
 
 	t.Run("matrix_select", func(t *testing.T) {
-		qry, err := engine.NewRangeQuery(storageWithSeries(series), nil, "rate(native_histogram_series[1m])", time.Unix(0, 0), time.Unix(60, 0), 60*time.Second)
+		qry, err := engine.NewRangeQuery(test.Queryable(), nil, "rate(native_histogram_series[1m])", time.Unix(0, 0), time.Unix(60, 0), 60*time.Second)
 		testutil.Ok(t, err)
 		res := qry.Exec(context.Background())
 		testutil.Ok(t, res.Err)
@@ -4225,9 +4289,10 @@ func TestMixedNativeHistogramTypes(t *testing.T) {
 		testutil.Ok(t, err)
 
 		testutil.Equals(t, 1, len(actual), "expected 1 series")
-		testutil.Equals(t, 1, len(actual[0].Points), "expected 1 point")
+		testutil.Equals(t, 1, len(actual[0].Histograms), "expected 1 point")
 		expected := histograms[1].ToFloat().Sub(histograms[0].ToFloat()).Scale(1 / float64(30))
-		testutil.Equals(t, expected, actual[0].Points[0].H)
+		expected.CounterResetHint = histogram.GaugeType
+		testutil.Equals(t, expected, actual[0].Histograms[0].H)
 	})
 }
 
@@ -4263,13 +4328,13 @@ func roundValues(r *promql.Result) {
 	switch result := r.Value.(type) {
 	case promql.Matrix:
 		for i := range result {
-			for j := range result[i].Points {
-				result[i].Points[j].V = math.Floor(result[i].Points[j].V*1e10) / 1e10
+			for j := range result[i].Floats {
+				result[i].Floats[j].F = math.Floor(result[i].Floats[j].F*1e10) / 1e10
 			}
 		}
 	case promql.Vector:
 		for i := range result {
-			result[i].V = math.Floor(result[i].V*10e10) / 10e10
+			result[i].F = math.Floor(result[i].F*10e10) / 10e10
 		}
 	}
 }
@@ -4283,39 +4348,5 @@ func emptyLabelsToNil(result *promql.Result) {
 				result.Value.(promql.Matrix)[i].Metric = nil
 			}
 		}
-	}
-}
-
-type sample struct {
-	t  int64
-	v  float64
-	h  *histogram.Histogram
-	fh *histogram.FloatHistogram
-}
-
-func (s sample) T() int64 {
-	return s.t
-}
-
-func (s sample) V() float64 {
-	return s.v
-}
-
-func (s sample) H() *histogram.Histogram {
-	return s.h
-}
-
-func (s sample) FH() *histogram.FloatHistogram {
-	return s.fh
-}
-
-func (s sample) Type() chunkenc.ValueType {
-	switch {
-	case s.h != nil:
-		return chunkenc.ValHistogram
-	case s.fh != nil:
-		return chunkenc.ValFloatHistogram
-	default:
-		return chunkenc.ValFloat
 	}
 }

@@ -419,7 +419,7 @@ func valueCompare(order sortOrder, l, r float64) bool {
 
 func (s sortFuncResultSort) comparer(samples *promql.Vector) func(i, j int) bool {
 	return func(i, j int) bool {
-		return valueCompare(s.sortOrder, (*samples)[i].V, (*samples)[j].V)
+		return valueCompare(s.sortOrder, (*samples)[i].F, (*samples)[j].F)
 	}
 }
 
@@ -441,7 +441,7 @@ func (s aggregateResultSort) comparer(samples *promql.Vector) func(i, j int) boo
 		if lblsCmp != 0 {
 			return lblsCmp < 0
 		}
-		return valueCompare(s.sortOrder, (*samples)[i].V, (*samples)[j].V)
+		return valueCompare(s.sortOrder, (*samples)[i].F, (*samples)[j].F)
 	}
 }
 
@@ -458,7 +458,10 @@ type compatibilityQuery struct {
 
 func (q *compatibilityQuery) Exec(ctx context.Context) (ret *promql.Result) {
 	// Handle case with strings early on as this does not need us to process samples.
-	// TODO(saswatamcode): Modify models.StepVector to support all types and check during executor creation.
+	switch e := q.expr.(type) {
+	case *parser.StringLiteral:
+		return &promql.Result{Value: promql.String{V: e.Val, T: q.ts.UnixMilli()}}
+	}
 	ret = &promql.Result{
 		Value: promql.Vector{},
 	}
@@ -505,19 +508,19 @@ loop:
 
 			for _, vector := range r {
 				for i, s := range vector.SampleIDs {
-					if len(series[s].Points) == 0 {
-						series[s].Points = make([]promql.Point, 0, 121) // Typically 1h of data.
+					if len(series[s].Floats) == 0 {
+						series[s].Floats = make([]promql.FPoint, 0, 121) // Typically 1h of data.
 					}
-					series[s].Points = append(series[s].Points, promql.Point{
+					series[s].Floats = append(series[s].Floats, promql.FPoint{
 						T: vector.T,
-						V: vector.Samples[i],
+						F: vector.Samples[i],
 					})
 				}
 				for i, s := range vector.HistogramIDs {
-					if len(series[s].Points) == 0 {
-						series[s].Points = make([]promql.Point, 0, 121) // Typically 1h of data.
+					if len(series[s].Histograms) == 0 {
+						series[s].Histograms = make([]promql.HPoint, 0, 121) // Typically 1h of data.
 					}
-					series[s].Points = append(series[s].Points, promql.Point{
+					series[s].Histograms = append(series[s].Histograms, promql.HPoint{
 						T: vector.T,
 						H: vector.Histograms[i],
 					})
@@ -532,7 +535,7 @@ loop:
 	if q.t == RangeQuery {
 		resultMatrix := make(promql.Matrix, 0, len(series))
 		for _, s := range series {
-			if len(s.Points) == 0 {
+			if len(s.Floats)+len(s.Histograms) == 0 {
 				continue
 			}
 			resultMatrix = append(resultMatrix, s)
@@ -550,26 +553,31 @@ loop:
 		// Convert matrix with one value per series into vector.
 		vector := make(promql.Vector, 0, len(resultSeries))
 		for i := range series {
-			if len(series[i].Points) == 0 {
+			if len(series[i].Floats)+len(series[i].Histograms) == 0 {
 				continue
 			}
 			// Point might have a different timestamp, force it to the evaluation
 			// timestamp as that is when we ran the evaluation.
-			vector = append(vector, promql.Sample{
-				Metric: series[i].Metric,
-				Point: promql.Point{
-					V: series[i].Points[0].V,
-					H: series[i].Points[0].H,
-					T: q.ts.UnixMilli(),
-				},
-			})
+			if len(series[i].Floats) > 0 {
+				vector = append(vector, promql.Sample{
+					Metric: series[i].Metric,
+					F:      series[i].Floats[0].F,
+					T:      q.ts.UnixMilli(),
+				})
+			} else {
+				vector = append(vector, promql.Sample{
+					Metric: series[i].Metric,
+					H:      series[i].Histograms[0].H,
+					T:      q.ts.UnixMilli(),
+				})
+			}
 		}
 		sort.Slice(vector, q.resultSort.comparer(&vector))
 		result = vector
 	case parser.ValueTypeScalar:
 		v := math.NaN()
 		if len(series) != 0 {
-			v = series[0].Points[0].V
+			v = series[0].Floats[0].F
 		}
 		result = promql.Scalar{V: v, T: q.ts.UnixMilli()}
 	default:
