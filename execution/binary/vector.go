@@ -6,15 +6,15 @@ package binary
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/efficientgo/core/errors"
 	"github.com/prometheus/prometheus/model/labels"
 	"golang.org/x/exp/slices"
 
-	"github.com/thanos-community/promql-engine/internal/prometheus/parser"
-
 	"github.com/thanos-community/promql-engine/execution/model"
+	"github.com/thanos-community/promql-engine/parser"
 )
 
 // vectorOperator evaluates an expression between two step vectors.
@@ -350,6 +350,9 @@ func buildOutputSeries(seriesID uint64, highCardSeries, lowCardSeries model.Seri
 			Keep(includeLabels...).
 			Labels()
 		metric = append(metric, lowCardLabels...)
+		sort.Slice(metric, func(i, j int) bool {
+			return metric[i].Name < metric[j].Name
+		})
 	}
 	return model.Series{ID: seriesID, Metric: metric}
 }

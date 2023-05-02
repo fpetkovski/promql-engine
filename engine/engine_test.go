@@ -58,16 +58,17 @@ func TestVectorSelectorWithGaps(t *testing.T) {
 	start := time.Unix(0, 0)
 	end := time.Unix(1000, 0)
 
+	ctx := context.Background()
 	newEngine := engine.New(engine.Opts{EngineOpts: opts})
-	q1, err := newEngine.NewRangeQuery(storageWithSeries(series), nil, query, start, end, 30*time.Second)
+	q1, err := newEngine.NewRangeQuery(ctx, storageWithSeries(series), nil, query, start, end, 30*time.Second)
 	testutil.Ok(t, err)
 	defer q1.Close()
 
-	newResult := q1.Exec(context.Background())
+	newResult := q1.Exec(ctx)
 	testutil.Ok(t, newResult.Err)
 
 	oldEngine := promql.NewEngine(opts)
-	q2, err := oldEngine.NewRangeQuery(storageWithSeries(series), nil, query, start, end, 30*time.Second)
+	q2, err := oldEngine.NewRangeQuery(ctx, storageWithSeries(series), nil, query, start, end, 30*time.Second)
 	testutil.Ok(t, err)
 	defer q2.Close()
 
@@ -1662,6 +1663,24 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 				http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50`,
 			query: `scalar(avg_over_time({__name__="http_requests_total"}[3m])) > bool 0.9464749352949011`,
 		},
+		{
+			name: "repro https://github.com/thanos-community/promql-engine/issues/239",
+			load: `load 30s
+				storage_used{storage_index="1010"} 65x20
+				storage_used{storage_index="1011"} 125x20
+				storage_used{storage_index="1012"} 0x20
+				storage_used{storage_index="20"} 2290380x20
+				storage_used{storage_index="30"} 397304x20
+				storage_used{storage_index="40"} 5590832x20
+				storage_used{storage_index="41"} 65559832x20
+				storage_used{storage_index="42"} 3516400x20
+				storage_info{storage_info="Config", storage_index="40"} 1x20
+				storage_info{storage_info="Log", storage_index="41"} 1x20
+				storage_info{storage_info="Mem", storage_index="20"} 1x20
+				storage_info{storage_info="Root", storage_index="42"} 1x20
+				storage_info{storage_info="Swap", storage_index="30"} 1x20`,
+			query: `avg by (storage_info) (storage_used * on (instance, storage_index) group_left(storage_info) (sum by (instance, storage_index, storage_info) (storage_info)))`,
+		},
 	}
 
 	disableOptimizerOpts := []bool{true, false}
@@ -1697,16 +1716,17 @@ func TestQueriesAgainstOldEngine(t *testing.T) {
 									DisableFallback:   disableFallback,
 									LogicalOptimizers: optimizers,
 								})
-								q1, err := newEngine.NewRangeQuery(test.Storage(), nil, tc.query, tc.start, tc.end, tc.step)
+								ctx := test.Context()
+								q1, err := newEngine.NewRangeQuery(ctx, test.Storage(), nil, tc.query, tc.start, tc.end, tc.step)
 								testutil.Ok(t, err)
 								defer q1.Close()
-								newResult := q1.Exec(context.Background())
+								newResult := q1.Exec(ctx)
 
 								oldEngine := promql.NewEngine(opts)
-								q2, err := oldEngine.NewRangeQuery(test.Storage(), nil, tc.query, tc.start, tc.end, tc.step)
+								q2, err := oldEngine.NewRangeQuery(ctx, test.Storage(), nil, tc.query, tc.start, tc.end, tc.step)
 								testutil.Ok(t, err)
 								defer q2.Close()
-								oldResult := q2.Exec(context.Background())
+								oldResult := q2.Exec(ctx)
 
 								if oldResult.Err != nil {
 									testutil.NotOk(t, newResult.Err, "expected error "+oldResult.Err.Error())
@@ -1827,15 +1847,15 @@ func TestBinopEdgeCases(t *testing.T) {
 	end := time.Unix(30000, 0)
 	step := time.Second * 30
 
+	ctx := context.Background()
 	oldEngine := promql.NewEngine(opts)
-	q1, err := oldEngine.NewRangeQuery(storageWithSeries(series...), nil, query, start, end, step)
+	q1, err := oldEngine.NewRangeQuery(ctx, storageWithSeries(series...), nil, query, start, end, step)
 	testutil.Ok(t, err)
 
 	newEngine := engine.New(engine.Opts{EngineOpts: opts})
-	q2, err := newEngine.NewRangeQuery(storageWithSeries(series...), nil, query, start, end, step)
+	q2, err := newEngine.NewRangeQuery(ctx, storageWithSeries(series...), nil, query, start, end, step)
 	testutil.Ok(t, err)
 
-	ctx := context.Background()
 	oldResult := q1.Exec(ctx)
 
 	newResult := q2.Exec(ctx)
@@ -1884,7 +1904,7 @@ func TestDisabledXFunction(t *testing.T) {
 			DisableFallback:   true,
 			LogicalOptimizers: optimizers,
 		})
-		_, err = newEngine.NewInstantQuery(test.Storage(), nil, tc.query, queryTime)
+		_, err = newEngine.NewInstantQuery(test.Context(), test.Storage(), nil, tc.query, queryTime)
 		testutil.NotOk(t, err)
 	}
 }
@@ -2074,17 +2094,18 @@ func TestXFunctions(t *testing.T) {
 
 		optimizers := logicalplan.AllOptimizers
 
+		ctx := test.Context()
 		newEngine := engine.New(engine.Opts{
 			EngineOpts:        opts,
 			DisableFallback:   true,
 			LogicalOptimizers: optimizers,
 			EnableXFunctions:  true,
 		})
-		query, err := newEngine.NewInstantQuery(test.Storage(), nil, tc.query, queryTime)
+		query, err := newEngine.NewInstantQuery(ctx, test.Storage(), nil, tc.query, queryTime)
 		testutil.Ok(t, err)
 		defer query.Close()
 
-		engineResult := query.Exec(context.Background())
+		engineResult := query.Exec(ctx)
 		testutil.Ok(t, engineResult.Err)
 		expectedResult := createVectorResult(tc.expected)
 
@@ -2408,7 +2429,7 @@ func TestRateVsXRate(t *testing.T) {
 			LogicalOptimizers: optimizers,
 			EnableXFunctions:  true,
 		})
-		query, err := newEngine.NewInstantQuery(test.Storage(), nil, tc.query, queryTime)
+		query, err := newEngine.NewInstantQuery(test.Context(), test.Storage(), nil, tc.query, queryTime)
 		testutil.Ok(t, err)
 		defer query.Close()
 
@@ -3254,18 +3275,19 @@ func TestInstantQuery(t *testing.T) {
 									LogicalOptimizers: optimizers,
 								})
 
-								q1, err := newEngine.NewInstantQuery(test.Storage(), nil, tc.query, queryTime)
+								ctx := test.Context()
+								q1, err := newEngine.NewInstantQuery(ctx, test.Storage(), nil, tc.query, queryTime)
 								testutil.Ok(t, err)
 								defer q1.Close()
 
-								newResult := q1.Exec(context.Background())
+								newResult := q1.Exec(ctx)
 
 								oldEngine := promql.NewEngine(opts)
-								q2, err := oldEngine.NewInstantQuery(test.Storage(), nil, tc.query, queryTime)
+								q2, err := oldEngine.NewInstantQuery(ctx, test.Storage(), nil, tc.query, queryTime)
 								testutil.Ok(t, err)
 								defer q2.Close()
 
-								oldResult := q2.Exec(context.Background())
+								oldResult := q2.Exec(ctx)
 
 								if tc.sortByLabels {
 									sortByLabels(oldResult)
@@ -3314,11 +3336,12 @@ func TestQueryCancellation(t *testing.T) {
 		},
 	}
 
+	ctx := context.Background()
 	newEngine := engine.New(engine.Opts{EngineOpts: promql.EngineOpts{Timeout: 1 * time.Hour}})
-	q1, err := newEngine.NewRangeQuery(querier, nil, query, start, end, step)
+	q1, err := newEngine.NewRangeQuery(ctx, querier, nil, query, start, end, step)
 	testutil.Ok(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		<-time.After(1000 * time.Millisecond)
 		cancel()
@@ -3346,7 +3369,7 @@ func TestQueryTimeout(t *testing.T) {
 
 	newEngine := engine.New(engine.Opts{DisableFallback: true, EngineOpts: opts})
 
-	q, err := newEngine.NewInstantQuery(test.Storage(), nil, query, end)
+	q, err := newEngine.NewInstantQuery(test.Context(), test.Storage(), nil, query, end)
 	testutil.Ok(t, err)
 
 	res := q.Exec(context.Background())
@@ -3664,15 +3687,16 @@ func TestSelectHintsSetCorrectly(t *testing.T) {
 			ng := engine.New(engine.Opts{EngineOpts: opts})
 			hintsRecorder := &hintRecordingQuerier{}
 			queryable := &storage.MockQueryable{MockQuerier: hintsRecorder}
+			ctx := context.Background()
 
 			var (
 				query promql.Query
 				err   error
 			)
 			if tc.end == 0 {
-				query, err = ng.NewInstantQuery(queryable, nil, tc.query, timestamp.Time(tc.start))
+				query, err = ng.NewInstantQuery(ctx, queryable, nil, tc.query, timestamp.Time(tc.start))
 			} else {
-				query, err = ng.NewRangeQuery(queryable, nil, tc.query, timestamp.Time(tc.start), timestamp.Time(tc.end), time.Second)
+				query, err = ng.NewRangeQuery(ctx, queryable, nil, tc.query, timestamp.Time(tc.start), timestamp.Time(tc.end), time.Second)
 			}
 			testutil.Ok(t, err)
 
@@ -3719,7 +3743,7 @@ func TestFallback(t *testing.T) {
 				MaxSamples: math.MaxInt64,
 			}
 			newEngine := engine.New(engine.Opts{DisableFallback: disableFallback, EngineOpts: opts})
-			q1, err := newEngine.NewRangeQuery(test.Storage(), nil, query, start, end, step)
+			q1, err := newEngine.NewRangeQuery(test.Context(), test.Storage(), nil, query, start, end, step)
 			if disableFallback {
 				testutil.NotOk(t, err)
 			} else {
@@ -3749,12 +3773,13 @@ func TestQueryStats(t *testing.T) {
 	testutil.Ok(t, err)
 	defer test.Close()
 
+	ctx := test.Context()
 	newEngine := engine.New(engine.Opts{DisableFallback: true, EngineOpts: opts})
-	q, err := newEngine.NewRangeQuery(test.Storage(), nil, query, start, end, step)
+	q, err := newEngine.NewRangeQuery(ctx, test.Storage(), nil, query, start, end, step)
 	testutil.Ok(t, err)
 	stats.NewQueryStats(q.Stats())
 
-	q, err = newEngine.NewInstantQuery(test.Storage(), nil, query, end)
+	q, err = newEngine.NewInstantQuery(ctx, test.Storage(), nil, query, end)
 	testutil.Ok(t, err)
 	stats.NewQueryStats(q.Stats())
 }
@@ -3952,10 +3977,11 @@ func TestEngineRecoversFromPanic(t *testing.T) {
 		newEngine := engine.New(engine.Opts{
 			DisableFallback: true,
 		})
-		q, err := newEngine.NewInstantQuery(querier, nil, "somequery", time.Time{})
+		ctx := context.Background()
+		q, err := newEngine.NewInstantQuery(ctx, querier, nil, "somequery", time.Time{})
 		testutil.Ok(t, err)
 
-		r := q.Exec(context.Background())
+		r := q.Exec(ctx)
 		testutil.Assert(t, r.Err.Error() == "unexpected error: panic!")
 	})
 
@@ -3963,10 +3989,11 @@ func TestEngineRecoversFromPanic(t *testing.T) {
 		newEngine := engine.New(engine.Opts{
 			DisableFallback: true,
 		})
-		q, err := newEngine.NewRangeQuery(querier, nil, "somequery", time.Time{}, time.Time{}, 42)
+		ctx := context.Background()
+		q, err := newEngine.NewRangeQuery(ctx, querier, nil, "somequery", time.Time{}, time.Time{}, 42)
 		testutil.Ok(t, err)
 
-		r := q.Exec(context.Background())
+		r := q.Exec(ctx)
 		testutil.Assert(t, r.Err.Error() == "unexpected error: panic!")
 	})
 
@@ -4098,7 +4125,8 @@ func testNativeHistograms(t *testing.T, cases []histogramTestCase, opts promql.E
 					})
 
 					t.Run("instant", func(t *testing.T) {
-						qry, err := engine.NewInstantQuery(test.Queryable(), nil, tc.query, time.Unix(50, 0))
+						ctx := test.Context()
+						qry, err := engine.NewInstantQuery(ctx, test.Queryable(), nil, tc.query, time.Unix(50, 0))
 						testutil.Ok(t, err)
 						newResult := qry.Exec(test.Context())
 						testutil.Ok(t, newResult.Err)
@@ -4106,7 +4134,7 @@ func testNativeHistograms(t *testing.T, cases []histogramTestCase, opts promql.E
 						testutil.Ok(t, err)
 
 						promEngine := test.QueryEngine()
-						qry, err = promEngine.NewInstantQuery(test.Queryable(), nil, tc.query, time.Unix(50, 0))
+						qry, err = promEngine.NewInstantQuery(ctx, test.Queryable(), nil, tc.query, time.Unix(50, 0))
 						testutil.Ok(t, err)
 						promResult := qry.Exec(test.Context())
 						testutil.Ok(t, promResult.Err)
@@ -4129,7 +4157,7 @@ func testNativeHistograms(t *testing.T, cases []histogramTestCase, opts promql.E
 					})
 
 					t.Run("range", func(t *testing.T) {
-						qry, err := engine.NewRangeQuery(test.Queryable(), nil, tc.query, time.Unix(50, 0), time.Unix(600, 0), 30*time.Second)
+						qry, err := engine.NewRangeQuery(test.Context(), test.Queryable(), nil, tc.query, time.Unix(50, 0), time.Unix(600, 0), 30*time.Second)
 						testutil.Ok(t, err)
 						res := qry.Exec(test.Context())
 						testutil.Ok(t, res.Err)
@@ -4137,7 +4165,7 @@ func testNativeHistograms(t *testing.T, cases []histogramTestCase, opts promql.E
 						testutil.Ok(t, err)
 
 						promEngine := test.QueryEngine()
-						qry, err = promEngine.NewRangeQuery(test.Queryable(), nil, tc.query, time.Unix(50, 0), time.Unix(600, 0), 30*time.Second)
+						qry, err = promEngine.NewRangeQuery(test.Context(), test.Queryable(), nil, tc.query, time.Unix(50, 0), time.Unix(600, 0), 30*time.Second)
 						testutil.Ok(t, err)
 						res = qry.Exec(test.Context())
 						testutil.Ok(t, res.Err)
@@ -4267,7 +4295,7 @@ func TestMixedNativeHistogramTypes(t *testing.T) {
 	})
 
 	t.Run("vector_select", func(t *testing.T) {
-		qry, err := engine.NewInstantQuery(test.Queryable(), nil, "sum(native_histogram_series)", time.Unix(30, 0))
+		qry, err := engine.NewInstantQuery(test.Context(), test.Queryable(), nil, "sum(native_histogram_series)", time.Unix(30, 0))
 		testutil.Ok(t, err)
 		res := qry.Exec(context.Background())
 		testutil.Ok(t, res.Err)
@@ -4281,7 +4309,7 @@ func TestMixedNativeHistogramTypes(t *testing.T) {
 	})
 
 	t.Run("matrix_select", func(t *testing.T) {
-		qry, err := engine.NewRangeQuery(test.Queryable(), nil, "rate(native_histogram_series[1m])", time.Unix(0, 0), time.Unix(60, 0), 60*time.Second)
+		qry, err := engine.NewRangeQuery(test.Context(), test.Queryable(), nil, "rate(native_histogram_series[1m])", time.Unix(0, 0), time.Unix(60, 0), 60*time.Second)
 		testutil.Ok(t, err)
 		res := qry.Exec(context.Background())
 		testutil.Ok(t, res.Err)

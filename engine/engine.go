@@ -5,36 +5,31 @@ package engine
 
 import (
 	"context"
-
-	promparser "github.com/prometheus/prometheus/promql/parser"
-	"github.com/prometheus/prometheus/storage"
-	"github.com/prometheus/prometheus/util/stats"
-
-	"github.com/thanos-community/promql-engine/internal/prometheus/parser"
-
-	"github.com/cespare/xxhash/v2"
-	"github.com/prometheus/prometheus/model/labels"
-	v1 "github.com/prometheus/prometheus/web/api/v1"
-
 	"io"
 	"math"
 	"runtime"
 	"sort"
 	"time"
 
-	"github.com/thanos-community/promql-engine/api"
-
+	"github.com/cespare/xxhash/v2"
 	"github.com/efficientgo/core/errors"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
+	promparser "github.com/prometheus/prometheus/promql/parser"
+	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/util/stats"
+	v1 "github.com/prometheus/prometheus/web/api/v1"
 
+	"github.com/thanos-community/promql-engine/api"
 	"github.com/thanos-community/promql-engine/execution"
 	"github.com/thanos-community/promql-engine/execution/model"
 	"github.com/thanos-community/promql-engine/execution/parse"
 	"github.com/thanos-community/promql-engine/logicalplan"
+	"github.com/thanos-community/promql-engine/parser"
 )
 
 type QueryType int
@@ -118,8 +113,8 @@ func (l remoteEngine) LabelSets() []labels.Labels {
 	return l.labelSets
 }
 
-func (l remoteEngine) NewRangeQuery(opts *promql.QueryOpts, qs string, start, end time.Time, interval time.Duration) (promql.Query, error) {
-	return l.engine.NewRangeQuery(l.q, opts, qs, start, end, interval)
+func (l remoteEngine) NewRangeQuery(ctx context.Context, opts *promql.QueryOpts, qs string, start, end time.Time, interval time.Duration) (promql.Query, error) {
+	return l.engine.NewRangeQuery(ctx, l.q, opts, qs, start, end, interval)
 }
 
 type distributedEngine struct {
@@ -140,22 +135,22 @@ func NewDistributedEngine(opts Opts, endpoints api.RemoteEndpoints) v1.QueryEngi
 
 func (l distributedEngine) SetQueryLogger(log promql.QueryLogger) {}
 
-func (l distributedEngine) NewInstantQuery(q storage.Queryable, opts *promql.QueryOpts, qs string, ts time.Time) (promql.Query, error) {
+func (l distributedEngine) NewInstantQuery(ctx context.Context, q storage.Queryable, opts *promql.QueryOpts, qs string, ts time.Time) (promql.Query, error) {
 	// Truncate milliseconds to avoid mismatch in timestamps between remote and local engines.
 	// Some clients might only support second precision when executing queries.
 	ts = ts.Truncate(time.Second)
 
-	return l.remoteEngine.NewInstantQuery(q, opts, qs, ts)
+	return l.remoteEngine.NewInstantQuery(ctx, q, opts, qs, ts)
 }
 
-func (l distributedEngine) NewRangeQuery(q storage.Queryable, opts *promql.QueryOpts, qs string, start, end time.Time, interval time.Duration) (promql.Query, error) {
+func (l distributedEngine) NewRangeQuery(ctx context.Context, q storage.Queryable, opts *promql.QueryOpts, qs string, start, end time.Time, interval time.Duration) (promql.Query, error) {
 	// Truncate milliseconds to avoid mismatch in timestamps between remote and local engines.
 	// Some clients might only support second precision when executing queries.
 	start = start.Truncate(time.Second)
 	end = end.Truncate(time.Second)
 	interval = interval.Truncate(time.Second)
 
-	return l.remoteEngine.NewRangeQuery(q, opts, qs, start, end, interval)
+	return l.remoteEngine.NewRangeQuery(ctx, q, opts, qs, start, end, interval)
 }
 
 func New(opts Opts) *compatibilityEngine {
@@ -236,7 +231,7 @@ func (e *compatibilityEngine) SetQueryLogger(l promql.QueryLogger) {
 	e.prom.SetQueryLogger(l)
 }
 
-func (e *compatibilityEngine) NewInstantQuery(q storage.Queryable, opts *promql.QueryOpts, qs string, ts time.Time) (promql.Query, error) {
+func (e *compatibilityEngine) NewInstantQuery(ctx context.Context, q storage.Queryable, opts *promql.QueryOpts, qs string, ts time.Time) (promql.Query, error) {
 	expr, err := parser.ParseExpr(qs)
 	if err != nil {
 		return nil, err
@@ -263,10 +258,10 @@ func (e *compatibilityEngine) NewInstantQuery(q storage.Queryable, opts *promql.
 	})
 	lplan = lplan.Optimize(e.logicalOptimizers)
 
-	exec, err := execution.New(lplan.Expr(), q, ts, ts, 0, opts.LookbackDelta, e.extLookbackDelta)
+	exec, err := execution.New(ctx, lplan.Expr(), q, ts, ts, 0, opts.LookbackDelta, e.extLookbackDelta)
 	if e.triggerFallback(err) {
 		e.metrics.queries.WithLabelValues("true").Inc()
-		return e.prom.NewInstantQuery(q, opts, qs, ts)
+		return e.prom.NewInstantQuery(ctx, q, opts, qs, ts)
 	}
 	e.metrics.queries.WithLabelValues("false").Inc()
 	if err != nil {
@@ -287,7 +282,7 @@ func (e *compatibilityEngine) NewInstantQuery(q storage.Queryable, opts *promql.
 	}, nil
 }
 
-func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.QueryOpts, qs string, start, end time.Time, step time.Duration) (promql.Query, error) {
+func (e *compatibilityEngine) NewRangeQuery(ctx context.Context, q storage.Queryable, opts *promql.QueryOpts, qs string, start, end time.Time, step time.Duration) (promql.Query, error) {
 	expr, err := parser.ParseExpr(qs)
 	if err != nil {
 		return nil, err
@@ -314,10 +309,10 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 	})
 	lplan = lplan.Optimize(e.logicalOptimizers)
 
-	exec, err := execution.New(lplan.Expr(), q, start, end, step, opts.LookbackDelta, e.extLookbackDelta)
+	exec, err := execution.New(ctx, lplan.Expr(), q, start, end, step, opts.LookbackDelta, e.extLookbackDelta)
 	if e.triggerFallback(err) {
 		e.metrics.queries.WithLabelValues("true").Inc()
-		return e.prom.NewRangeQuery(q, opts, qs, start, end, step)
+		return e.prom.NewRangeQuery(ctx, q, opts, qs, start, end, step)
 	}
 	e.metrics.queries.WithLabelValues("false").Inc()
 	if err != nil {
@@ -335,6 +330,15 @@ func (e *compatibilityEngine) NewRangeQuery(q storage.Queryable, opts *promql.Qu
 		t:      RangeQuery,
 	}, nil
 }
+
+type ExplainableQuery interface {
+	promql.Query
+
+	Explain() string
+	Profile()
+}
+
+var _ ExplainableQuery = &compatibilityQuery{}
 
 type Query struct {
 	exec model.VectorOperator
