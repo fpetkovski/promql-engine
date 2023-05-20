@@ -104,11 +104,11 @@ func (o *histogramOperator) Next(ctx context.Context) ([]model.StepVector, error
 	}
 
 	o.scalarPoints = o.scalarPoints[:0]
-	for _, scalar := range scalars {
+	for i, scalar := range scalars {
 		if len(scalar.Samples) > 0 {
 			o.scalarPoints = append(o.scalarPoints, scalar.Samples[0])
 		}
-		o.scalarOp.GetPool().PutStepVector(scalar)
+		o.scalarOp.GetPool().PutStepVector(scalars[i])
 	}
 	o.scalarOp.GetPool().PutVectors(scalars)
 
@@ -166,7 +166,7 @@ func (o *histogramOperator) processInputSeries(vectors []model.StepVector) ([]mo
 		}
 
 		out = append(out, step)
-		o.vectorOp.GetPool().PutStepVector(vector)
+		o.vectorOp.GetPool().PutStepVector(vectors[stepIndex])
 	}
 
 	o.vectorOp.GetPool().PutVectors(vectors)

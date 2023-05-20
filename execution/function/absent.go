@@ -15,16 +15,15 @@ import (
 )
 
 type absentOperator struct {
-	mint        int64
-	maxt        int64
-	step        int64
-	currentStep int64
-	stepsBatch  int
-	once        sync.Once
-	funcExpr    *parser.Call
-	series      []labels.Labels
-	pool        *model.VectorPool
-	next        model.VectorOperator
+	mint       int64
+	maxt       int64
+	step       int64
+	stepsBatch int
+	once       sync.Once
+	funcExpr   *parser.Call
+	series     []labels.Labels
+	pool       *model.VectorPool
+	next       model.VectorOperator
 }
 
 func (o *absentOperator) Explain() (me string, next []model.VectorOperator) {
@@ -64,6 +63,7 @@ func (o *absentOperator) loadSeries() {
 			}
 		}
 		o.series = []labels.Labels{labels.FromMap(lmap)}
+		o.pool.SetStepSize(1)
 	})
 }
 
@@ -79,33 +79,22 @@ func (o *absentOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 	}
 	o.loadSeries()
 
-	if o.currentStep > o.maxt {
-		return nil, nil
-	}
-
-	result := o.GetPool().GetVectorBatch()
 	vectors, err := o.next.Next(ctx)
 	if err != nil {
 		return nil, err
 	}
-	stepsThisBatch := 0
+	if vectors == nil {
+		return nil, err
+	}
+	result := o.GetPool().GetVectorBatch()
 	for i := range vectors {
-		sv := o.GetPool().GetStepVector(o.currentStep)
-		o.currentStep += o.step
+		sv := o.GetPool().GetStepVector(vectors[i].T)
 		if len(vectors[i].Samples) == 0 {
 			sv.AppendSample(o.GetPool(), 0, 1)
 		}
 		result = append(result, sv)
 		o.next.GetPool().PutStepVector(vectors[i])
-		stepsThisBatch++
 	}
 	o.next.GetPool().PutVectors(vectors)
-
-	for ; stepsThisBatch < o.stepsBatch && o.currentStep <= o.maxt; stepsThisBatch++ {
-		sv := o.GetPool().GetStepVector(o.currentStep)
-		sv.AppendSample(o.GetPool(), 0, 1)
-		result = append(result, sv)
-		o.currentStep += o.step
-	}
 	return result, nil
 }

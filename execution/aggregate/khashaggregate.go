@@ -117,7 +117,7 @@ func (a *kAggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 			continue
 		}
 		a.aggregate(vector.T, &result, int(a.params[i]), vector.SampleIDs, vector.Samples)
-		a.next.GetPool().PutStepVector(vector)
+		a.next.GetPool().PutStepVector(in[i])
 	}
 	a.next.GetPool().PutVectors(in)
 

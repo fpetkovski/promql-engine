@@ -263,15 +263,18 @@ func BenchmarkRangeQuery(b *testing.B) {
 		{
 			name:  "absent and exists",
 			query: `absent(http_requests_total)`,
+			test:  sixHourDataset,
 		},
 		{
 			name:  "absent and doesnt exist",
 			query: `absent(nonexistent)`,
+			test:  sixHourDataset,
 		},
 	}
 
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
 			b.Run("old_engine", func(b *testing.B) {
 				opts := promql.EngineOpts{
 					Logger:               nil,

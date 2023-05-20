@@ -139,7 +139,7 @@ func (o *scalarOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 			step.AppendSample(o.pool, vector.SampleIDs[i], val)
 		}
 		out = append(out, step)
-		o.next.GetPool().PutStepVector(vector)
+		o.next.GetPool().PutStepVector(in[v])
 	}
 
 	for i := range scalarIn {

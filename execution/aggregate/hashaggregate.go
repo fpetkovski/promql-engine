@@ -143,14 +143,15 @@ func (a *aggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 		}
 	}
 
-	for i, vector := range in {
+	for i := range in {
 		output, err := a.workers[i].GetOutput()
 		if err != nil {
 			return nil, err
 		}
 		result = append(result, output)
-		a.next.GetPool().PutStepVector(vector)
+		a.next.GetPool().PutStepVector(in[i])
 	}
+	a.next.GetPool().PutVectors(in)
 
 	return result, nil
 }

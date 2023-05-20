@@ -90,14 +90,9 @@ func NewFunctionOperator(funcExpr *parser.Call, call FunctionCall, nextOps []mod
 		}
 
 		op := &absentOperator{
-			mint:        opts.Start.UnixMilli(),
-			maxt:        opts.End.UnixMilli(),
-			currentStep: opts.Start.UnixMilli(),
-			step:        interval,
-			next:        nextOps[0],
-			stepsBatch:  stepsBatch,
-			funcExpr:    funcExpr,
-			pool:        model.NewVectorPool(stepsBatch),
+			next:     nextOps[0],
+			funcExpr: funcExpr,
+			pool:     model.NewVectorPool(stepsBatch),
 		}
 		return op, nil
 	}

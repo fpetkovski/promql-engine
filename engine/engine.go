@@ -471,7 +471,7 @@ func (q *compatibilityQuery) Exec(ctx context.Context) (ret *promql.Result) {
 	ret = &promql.Result{
 		Value: promql.Vector{},
 	}
-	defer recoverEngine(q.engine.logger, q.expr, &ret.Err)
+	//defer recoverEngine(q.engine.logger, q.expr, &ret.Err)
 
 	q.engine.metrics.currentQueries.Inc()
 	defer q.engine.metrics.currentQueries.Dec()

@@ -106,6 +106,13 @@ func (o *vectorSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 
 	vectors := o.vectorPool.GetVectorBatch()
 	ts := o.currentStep
+	for i := 0; i < o.numSteps && ts <= o.maxt; i++ {
+		vectors = append(vectors, o.vectorPool.GetStepVector(ts))
+		ts += o.step
+	}
+
+	// Reset timestamp.
+	ts = o.currentStep
 	for i := 0; i < len(o.scanners); i++ {
 		var (
 			series   = o.scanners[i]
@@ -113,9 +120,6 @@ func (o *vectorSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 		)
 
 		for currStep := 0; currStep < o.numSteps && seriesTs <= o.maxt; currStep++ {
-			if len(vectors) <= currStep {
-				vectors = append(vectors, o.vectorPool.GetStepVector(seriesTs))
-			}
 			_, v, h, ok, err := selectPoint(series.samples, seriesTs, o.lookbackDelta, o.offset)
 			if err != nil {
 				return nil, err
