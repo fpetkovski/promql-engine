@@ -131,14 +131,6 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 
 				// TODO(saswatamcode): Tracked in https://github.com/thanos-io/promql-engine/issues/23
 				// Based on the category we can create an apt query plan.
-				aligner, err := function.NewAligner(e.Func.Name, milliSecondRange)
-				if err != nil {
-					return nil, err
-				}
-				if aligner == nil {
-					return nil, parse.ErrNotImplemented
-				}
-
 				filter := storage.GetFilteredSelector(start, end, opts.Step.Milliseconds(), vs.LabelMatchers, filters, hints)
 				numShards := runtime.GOMAXPROCS(0) / 2
 				if numShards < 1 {
@@ -147,6 +139,14 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 
 				operators := make([]model.VectorOperator, 0, numShards)
 				for i := 0; i < numShards; i++ {
+					aligner, err := function.NewAligner(e.Func.Name, milliSecondRange)
+					if err != nil {
+						return nil, err
+					}
+					if aligner == nil {
+						return nil, parse.ErrNotImplemented
+					}
+
 					operator := exchange.NewConcurrent(
 						scan.NewMatrixSelector(model.NewVectorPool(stepsBatch), filter, aligner, e, opts, t.Range, vs.Offset, i, numShards),
 						2,

@@ -15,6 +15,34 @@ type Aligner interface {
 	GetResult(t int64) (v float64, fh *histogram.FloatHistogram, ok bool)
 }
 
+type newAlignerFunc func(step int64) Aligner
+
+var aligners = map[string]newAlignerFunc{
+	"rate": func(selectRange int64) Aligner {
+		return &rateAligner{
+			isCounter:   true,
+			isRate:      true,
+			selectRange: selectRange,
+		}
+	},
+	"sum_over_time": func(selectRange int64) Aligner {
+		return &sumAligner{}
+	},
+}
+
+func NewAligner(name string, selectRange int64) (Aligner, error) {
+	if aligner, ok := aligners[name]; ok {
+		return aligner(selectRange), nil
+	}
+
+	msg := fmt.Sprintf("unknown function: %s", name)
+	if _, ok := parser.Functions[name]; ok {
+		return nil, errors.Wrap(parse.ErrNotImplemented, msg)
+	}
+
+	return nil, errors.Wrap(parse.ErrNotSupportedExpr, msg)
+}
+
 type rateAligner struct {
 	isRate    bool
 	isCounter bool
@@ -31,26 +59,24 @@ type rateAligner struct {
 }
 
 func (r *rateAligner) AddSample(t int64, v float64, fh *histogram.FloatHistogram) {
-	if r.numSamples == 0 {
-		r.firstFloat = v
-		r.firstHistogram = fh
-
+	if r.numSamples > 0 {
 		r.lastFloat = v
 		r.lastHistogram = fh
-
-		r.firstT = t
 		r.lastT = t
-
 		r.numSamples++
+		if r.isCounter && r.lastFloat > v {
+			v += r.lastFloat
+		}
 		return
 	}
 
-	if r.isCounter && r.lastFloat > v {
-		v += r.lastFloat
-	}
+	r.firstFloat = v
+	r.firstHistogram = fh
 
 	r.lastFloat = v
 	r.lastHistogram = fh
+
+	r.firstT = t
 	r.lastT = t
 	r.numSamples++
 }
@@ -121,27 +147,19 @@ func (r *rateAligner) reset() {
 	r.lastHistogram = nil
 }
 
-var aligners = map[string]newAlignerFunc{
-	"rate": func(selectRange int64) Aligner {
-		return &rateAligner{
-			isCounter:   true,
-			isRate:      true,
-			selectRange: selectRange,
-		}
-	},
+type sumAligner struct {
+	hasSamples bool
+	sum        float64
 }
 
-type newAlignerFunc func(step int64) Aligner
+func (s *sumAligner) AddSample(t int64, v float64, fh *histogram.FloatHistogram) {
+	s.hasSamples = true
+	s.sum += v
+}
 
-func NewAligner(name string, selectRange int64) (Aligner, error) {
-	if aligner, ok := aligners[name]; ok {
-		return aligner(selectRange), nil
-	}
-
-	msg := fmt.Sprintf("unknown function: %s", name)
-	if _, ok := parser.Functions[name]; ok {
-		return nil, errors.Wrap(parse.ErrNotImplemented, msg)
-	}
-
-	return nil, errors.Wrap(parse.ErrNotSupportedExpr, msg)
+func (s *sumAligner) GetResult(t int64) (v float64, fh *histogram.FloatHistogram, ok bool) {
+	result := s.sum
+	s.hasSamples = false
+	s.sum = 0
+	return result, nil, true
 }

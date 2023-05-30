@@ -229,23 +229,6 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 // are populated from the iterator.
 // TODO(fpetkovski): Add max samples limit.
 func selectPoints(it *storage.BufferedSeriesIterator, mint, maxt int64, aligner function.Aligner) error {
-	//if len(aligner) > 0 && aligner[len(aligner)-1].T >= mint {
-	//	// There is an overlap between previous and current ranges, retain common
-	//	// points. In most such cases:
-	//	//   (a) the overlap is significantly larger than the eval step; and/or
-	//	//   (b) the number of samples is relatively small.
-	//	// so a linear search will be as fast as a binary search.
-	//	var drop int
-	//	for drop = 0; aligner[drop].T < mint; drop++ {
-	//	}
-	//	copy(aligner, aligner[drop:])
-	//	aligner = aligner[:len(aligner)-drop]
-	//	// Only append points with timestamps after the last timestamp we have.
-	//	mint = aligner[len(aligner)-1].T + 1
-	//} else {
-	//	aligner = aligner[:0]
-	//}
-
 	soughtValueType := it.Seek(maxt)
 	if soughtValueType == chunkenc.ValNone {
 		if it.Err() != nil {

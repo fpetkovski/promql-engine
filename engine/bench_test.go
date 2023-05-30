@@ -84,7 +84,7 @@ func BenchmarkChunkDecoding(b *testing.B) {
 }
 
 func BenchmarkSingleQuery(b *testing.B) {
-	test := setupStorage(b, 5000, 3, 720)
+	test := setupStorage(b, 500, 3, 720)
 	defer test.Close()
 
 	start := time.Unix(0, 0)
@@ -148,6 +148,11 @@ func BenchmarkRangeQuery(b *testing.B) {
 		{
 			name:  "rate",
 			query: "rate(http_requests_total[1m])",
+			test:  sixHourDataset,
+		},
+		{
+			name:  "sum_over_time",
+			query: "sum_over_time(http_requests_total[2m])",
 			test:  sixHourDataset,
 		},
 		//{
