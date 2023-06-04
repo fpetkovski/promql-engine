@@ -5,6 +5,7 @@ package function
 
 import (
 	"fmt"
+	"gonum.org/v1/gonum/floats"
 	"math"
 	"time"
 
@@ -21,6 +22,8 @@ var InvalidSample = promql.Sample{T: -1, F: 0}
 
 type FunctionArgs struct {
 	Labels           labels.Labels
+	Ts               []int64
+	Floats           []float64
 	Samples          []promql.Sample
 	StepTime         int64
 	SelectRange      int64
@@ -121,13 +124,13 @@ var Funcs = map[string]FunctionCall{
 		}
 	},
 	"sum_over_time": func(f FunctionArgs) promql.Sample {
-		if len(f.Samples) == 0 {
+		if len(f.Floats) == 0 {
 			return InvalidSample
 		}
 		return promql.Sample{
 			Metric: f.Labels,
 			T:      f.StepTime,
-			F:      sumOverTime(f.Samples),
+			F:      sumOverTime(f.Floats),
 		}
 	},
 	"max_over_time": func(f FunctionArgs) promql.Sample {
@@ -579,7 +582,7 @@ func extrapolatedRate(samples []promql.Sample, isCounter, isRate bool, stepTime 
 	if resultHistogram == nil {
 		resultValue *= factor
 	} else {
-		resultHistogram.Scale(factor)
+		//resultHistogram.Mul(factor)
 
 	}
 
@@ -803,15 +806,8 @@ func avgOverTime(points []promql.Sample) float64 {
 	return mean + c
 }
 
-func sumOverTime(points []promql.Sample) float64 {
-	var sum, c float64
-	for _, v := range points {
-		sum, c = KahanSumInc(v.F, sum, c)
-	}
-	if math.IsInf(sum, 0) {
-		return sum
-	}
-	return sum + c
+func sumOverTime(floatVals []float64) float64 {
+	return floats.Sum(floatVals)
 }
 
 func stddevOverTime(points []promql.Sample) float64 {

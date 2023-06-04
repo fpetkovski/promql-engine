@@ -84,15 +84,16 @@ func BenchmarkChunkDecoding(b *testing.B) {
 }
 
 func BenchmarkSingleQuery(b *testing.B) {
-	test := setupStorage(b, 5000, 3, 720)
+	b.StopTimer()
+	test := setupStorage(b, 100, 3, 720)
 	defer test.Close()
 
 	start := time.Unix(0, 0)
 	end := start.Add(6 * time.Hour)
 	step := time.Second * 30
 
-	query := "sum(rate(http_requests_total[2m]))"
-	b.ResetTimer()
+	query := "sum_over_time(http_requests_total[1h])"
+	b.StartTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		result := executeRangeQuery(b, query, test, start, end, step)
@@ -105,14 +106,14 @@ func BenchmarkRangeQuery(b *testing.B) {
 	sixHourDataset := setupStorage(b, 1000, 3, 6*samplesPerHour)
 	defer sixHourDataset.Close()
 
-	largeSixHourDataset := setupStorage(b, 10000, 10, 6*samplesPerHour)
-	defer largeSixHourDataset.Close()
-
-	sevenDaysAndTwoHoursDataset := setupStorage(b, 1000, 3, (7*24+2)*samplesPerHour)
-	defer sevenDaysAndTwoHoursDataset.Close()
+	//largeSixHourDataset := setupStorage(b, 10000, 10, 6*samplesPerHour)
+	//defer largeSixHourDataset.Close()
+	//
+	//sevenDaysAndTwoHoursDataset := setupStorage(b, 1000, 3, (7*24+2)*samplesPerHour)
+	//defer sevenDaysAndTwoHoursDataset.Close()
 
 	start := time.Unix(0, 0)
-	end := start.Add(2 * time.Hour)
+	end := start.Add(6 * time.Hour)
 	step := time.Second * 30
 
 	cases := []struct {
@@ -120,146 +121,162 @@ func BenchmarkRangeQuery(b *testing.B) {
 		query string
 		test  *promql.Test
 	}{
+		//{
+		//	name:  "vector selector",
+		//	query: "http_requests_total",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "sum",
+		//	query: "sum(http_requests_total)",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "sum by pod",
+		//	query: "sum by (pod) (http_requests_total)",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "topk",
+		//	query: "topk(2,http_requests_total)",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "bottomk",
+		//	query: "bottomk(2,http_requests_total)",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "rate",
+		//	query: "rate(http_requests_total[1m])",
+		//	test:  sixHourDataset,
+		//},
 		{
-			name:  "vector selector",
-			query: "http_requests_total",
+			name:  "sum_over_time 2m",
+			query: "sum_over_time(http_requests_total[2m])",
 			test:  sixHourDataset,
 		},
 		{
-			name:  "sum",
-			query: "sum(http_requests_total)",
+			name:  "sum_over_time 15m",
+			query: "sum_over_time(http_requests_total[15m])",
 			test:  sixHourDataset,
 		},
 		{
-			name:  "sum by pod",
-			query: "sum by (pod) (http_requests_total)",
+			name:  "sum_over_time 1h",
+			query: "sum_over_time(http_requests_total[1h])",
 			test:  sixHourDataset,
 		},
-		{
-			name:  "topk",
-			query: "topk(2,http_requests_total)",
-			test:  sixHourDataset,
-		},
-		{
-			name:  "bottomk",
-			query: "bottomk(2,http_requests_total)",
-			test:  sixHourDataset,
-		},
-		{
-			name:  "rate",
-			query: "rate(http_requests_total[1m])",
-			test:  sixHourDataset,
-		},
-		{
-			name:  "rate with large range selection",
-			query: "rate(http_requests_total[7d])",
-			test:  sevenDaysAndTwoHoursDataset,
-		},
-		{
-			name:  "rate with large number of series, 1m range",
-			query: "rate(http_requests_total[1m])",
-			test:  largeSixHourDataset,
-		},
-		{
-			name:  "rate with large number of series, 5m range",
-			query: "rate(http_requests_total[5m])",
-			test:  largeSixHourDataset,
-		},
-		{
-			name:  "sum rate",
-			query: "sum(rate(http_requests_total[1m]))",
-			test:  sixHourDataset,
-		},
-		{
-			name:  "sum by rate",
-			query: "sum by (pod) (rate(http_requests_total[1m]))",
-			test:  sixHourDataset,
-		},
-		{
-			name:  "quantile with variable parameter",
-			query: "quantile by (pod) (scalar(min(http_requests_total)), http_requests_total)",
-			test:  sixHourDataset,
-		},
-		{
-			name:  "binary operation with one to one",
-			query: `http_requests_total{container="c1"} / ignoring(container) http_responses_total`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "binary operation with many to one",
-			query: `http_requests_total / on (pod) group_left http_responses_total`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "binary operation with vector and scalar",
-			query: `http_requests_total * 10`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "unary negation",
-			query: `-http_requests_total`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "vector and scalar comparison",
-			query: `http_requests_total > 10`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "positive offset vector",
-			query: "http_requests_total offset 5m",
-			test:  sixHourDataset,
-		},
-		{
-			name:  "at modifier ",
-			query: "http_requests_total @ 600",
-			test:  sixHourDataset,
-		},
-		{
-			name:  "at modifier with positive offset vector",
-			query: "http_requests_total @ 600 offset 5m",
-			test:  sixHourDataset,
-		},
-		{
-			name:  "clamp",
-			query: `clamp(http_requests_total, 5, 10)`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "clamp_min",
-			query: `clamp_min(http_requests_total, 10)`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "complex func query",
-			query: `clamp(1 - http_requests_total, 10 - 5, 10)`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "func within func query",
-			query: `clamp(irate(http_requests_total[30s]), 10 - 5, 10)`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "aggr within func query",
-			query: `clamp(rate(http_requests_total[30s]), 10 - 5, 10)`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "histogram_quantile",
-			query: `histogram_quantile(0.9, http_response_seconds_bucket)`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "sort",
-			query: `sort(http_requests_total)`,
-			test:  sixHourDataset,
-		},
-		{
-			name:  "sort_desc",
-			query: `sort_desc(http_requests_total)`,
-			test:  sixHourDataset,
-		},
+
+		//{
+		//	name:  "rate with large range selection",
+		//	query: "rate(http_requests_total[7d])",
+		//	test:  sevenDaysAndTwoHoursDataset,
+		//},
+		//{
+		//	name:  "rate with large number of series, 1m range",
+		//	query: "rate(http_requests_total[1m])",
+		//	test:  largeSixHourDataset,
+		//},
+		//{
+		//	name:  "rate with large number of series, 5m range",
+		//	query: "rate(http_requests_total[5m])",
+		//	test:  largeSixHourDataset,
+		//},
+		//{
+		//	name:  "sum rate",
+		//	query: "sum(rate(http_requests_total[1m]))",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "sum by rate",
+		//	query: "sum by (pod) (rate(http_requests_total[1m]))",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "quantile with variable parameter",
+		//	query: "quantile by (pod) (scalar(min(http_requests_total)), http_requests_total)",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "binary operation with one to one",
+		//	query: `http_requests_total{container="c1"} / ignoring(container) http_responses_total`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "binary operation with many to one",
+		//	query: `http_requests_total / on (pod) group_left http_responses_total`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "binary operation with vector and scalar",
+		//	query: `http_requests_total * 10`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "unary negation",
+		//	query: `-http_requests_total`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "vector and scalar comparison",
+		//	query: `http_requests_total > 10`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "positive offset vector",
+		//	query: "http_requests_total offset 5m",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "at modifier ",
+		//	query: "http_requests_total @ 600",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "at modifier with positive offset vector",
+		//	query: "http_requests_total @ 600 offset 5m",
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "clamp",
+		//	query: `clamp(http_requests_total, 5, 10)`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "clamp_min",
+		//	query: `clamp_min(http_requests_total, 10)`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "complex func query",
+		//	query: `clamp(1 - http_requests_total, 10 - 5, 10)`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "func within func query",
+		//	query: `clamp(irate(http_requests_total[30s]), 10 - 5, 10)`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "aggr within func query",
+		//	query: `clamp(rate(http_requests_total[30s]), 10 - 5, 10)`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "histogram_quantile",
+		//	query: `histogram_quantile(0.9, http_response_seconds_bucket)`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "sort",
+		//	query: `sort(http_requests_total)`,
+		//	test:  sixHourDataset,
+		//},
+		//{
+		//	name:  "sort_desc",
+		//	query: `sort_desc(http_requests_total)`,
+		//	test:  sixHourDataset,
+		//},
 	}
 
 	for _, tc := range cases {

@@ -6,6 +6,7 @@ package scan
 import (
 	"context"
 	"fmt"
+	"github.com/prometheus/prometheus/model/histogram"
 	"sync"
 	"time"
 
@@ -28,6 +29,9 @@ type matrixScanner struct {
 	previousSamples  []promql.Sample
 	samples          *storage.BufferedSeriesIterator
 	metricAppearedTs *int64
+	tsBuf            []int64
+	floatsBuf        []float64
+	histBuf          []*histogram.FloatHistogram
 }
 
 type matrixSelector struct {
@@ -131,7 +135,6 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 
 	// Reset the current timestamp.
 	ts = o.currentStep
-	lblBuilder := labels.ScratchBuilder{}
 	for i := 0; i < len(o.scanners); i++ {
 		var (
 			series   = o.scanners[i]
@@ -142,13 +145,15 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 			maxt := seriesTs - o.offset
 			mint := maxt - o.selectRange
 
-			var rangeSamples []promql.Sample
-			var err error
+			var (
+				rangeSamples []promql.Sample
+				err          error
+			)
 
 			if function.IsExtFunction(o.funcExpr.Func.Name) {
 				rangeSamples, err = selectExtPoints(series.samples, mint, maxt, o.scanners[i].previousSamples, o.extLookbackDelta, &o.scanners[i].metricAppearedTs)
 			} else {
-				rangeSamples, err = selectPoints(series.samples, mint, maxt, o.scanners[i].previousSamples)
+				err = o.scanners[i].selectPoints(mint, maxt)
 			}
 
 			if err != nil {
@@ -161,12 +166,13 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 			// https://github.com/thanos-io/promql-engine/issues/39
 			result := o.call(function.FunctionArgs{
 				Labels:           series.labels,
+				Ts:               o.scanners[i].tsBuf,
+				Floats:           o.scanners[i].floatsBuf,
 				Samples:          rangeSamples,
 				StepTime:         seriesTs,
 				SelectRange:      o.selectRange,
 				Offset:           o.offset,
 				MetricAppearedTs: o.scanners[i].metricAppearedTs,
-				LabelsBuilder:    lblBuilder,
 			})
 
 			if result.T != function.InvalidSample.T {
@@ -235,6 +241,9 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 				labels:    lbls,
 				signature: s.Signature,
 				samples:   storage.NewBufferIterator(s.Iterator(nil), selectRange),
+				floatsBuf: make([]float64, 0),
+				tsBuf:     make([]int64, 0),
+				histBuf:   make([]*histogram.FloatHistogram, 0),
 			}
 			o.series[i] = lbls
 		}
@@ -252,28 +261,37 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 // into the [mint, maxt] range are retained; only points with later timestamps
 // are populated from the iterator.
 // TODO(fpetkovski): Add max samples limit.
-func selectPoints(it *storage.BufferedSeriesIterator, mint, maxt int64, out []promql.Sample) ([]promql.Sample, error) {
-	if len(out) > 0 && out[len(out)-1].T >= mint {
+func (m *matrixScanner) selectPoints(mint, maxt int64) error {
+	if len(m.tsBuf) > 0 && m.tsBuf[len(m.tsBuf)-1] >= mint {
 		// There is an overlap between previous and current ranges, retain common
 		// points. In most such cases:
 		//   (a) the overlap is significantly larger than the eval step; and/or
 		//   (b) the number of samples is relatively small.
 		// so a linear search will be as fast as a binary search.
 		var drop int
-		for drop = 0; out[drop].T < mint; drop++ {
+		for drop = 0; m.tsBuf[drop] < mint; drop++ {
 		}
-		copy(out, out[drop:])
-		out = out[:len(out)-drop]
+		copy(m.tsBuf, m.tsBuf[drop:])
+		copy(m.floatsBuf, m.floatsBuf[drop:])
+		//copy(m.histBuf, m.histBuf[drop:])
+
+		m.tsBuf = m.tsBuf[:len(m.tsBuf)-drop]
+		m.floatsBuf = m.floatsBuf[:len(m.floatsBuf)-drop]
+		//m.histBuf = m.histBuf[:len(m.histBuf)-drop]
+
 		// Only append points with timestamps after the last timestamp we have.
-		mint = out[len(out)-1].T + 1
+		mint = m.tsBuf[len(m.tsBuf)-1] + 1
 	} else {
-		out = out[:0]
+		m.tsBuf = m.tsBuf[:0]
+		m.floatsBuf = m.floatsBuf[:0]
+		//m.histBuf = m.histBuf[:0]
 	}
 
-	soughtValueType := it.Seek(maxt)
+	it := m.samples
+	soughtValueType := m.samples.Seek(maxt)
 	if soughtValueType == chunkenc.ValNone {
-		if it.Err() != nil {
-			return nil, it.Err()
+		if m.samples.Err() != nil {
+			return it.Err()
 		}
 	}
 
@@ -289,7 +307,8 @@ loop:
 				continue loop
 			}
 			if t >= mint {
-				out = append(out, promql.Sample{T: t, H: fh})
+				m.tsBuf = append(m.tsBuf, t)
+				m.histBuf = append(m.histBuf, fh)
 			}
 		case chunkenc.ValFloat:
 			t, v := buf.At()
@@ -298,7 +317,8 @@ loop:
 			}
 			// Values in the buffer are guaranteed to be smaller than maxt.
 			if t >= mint {
-				out = append(out, promql.Sample{T: t, F: v})
+				m.tsBuf = append(m.tsBuf, t)
+				m.floatsBuf = append(m.floatsBuf, v)
 			}
 		}
 	}
@@ -308,16 +328,18 @@ loop:
 	case chunkenc.ValHistogram, chunkenc.ValFloatHistogram:
 		t, fh := it.AtFloatHistogram()
 		if t == maxt && !value.IsStaleNaN(fh.Sum) {
-			out = append(out, promql.Sample{T: t, H: fh})
+			m.tsBuf = append(m.tsBuf, t)
+			m.histBuf = append(m.histBuf, fh)
 		}
 	case chunkenc.ValFloat:
 		t, v := it.At()
 		if t == maxt && !value.IsStaleNaN(v) {
-			out = append(out, promql.Sample{T: t, F: v})
+			m.tsBuf = append(m.tsBuf, t)
+			m.floatsBuf = append(m.floatsBuf, v)
 		}
 	}
 
-	return out, nil
+	return nil
 }
 
 // matrixIterSlice populates a matrix vector covering the requested range for a
