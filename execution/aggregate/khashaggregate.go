@@ -34,7 +34,7 @@ type kAggregate struct {
 	aggregation parser.ItemType
 
 	once        sync.Once
-	series      []labels.Labels
+	seriesIter  model.LabelsIterator
 	inputToHeap []*samplesHeap
 	heaps       []*samplesHeap
 	compare     func(float64, float64) bool
@@ -132,14 +132,14 @@ func (a *kAggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 	return result, nil
 }
 
-func (a *kAggregate) Series(ctx context.Context) ([]labels.Labels, error) {
+func (a *kAggregate) Series(ctx context.Context) model.LabelsIterator {
 	var err error
 	a.once.Do(func() { err = a.init(ctx) })
 	if err != nil {
-		return nil, err
+		return model.ErrorLabels(err)
 	}
 
-	return a.series, nil
+	return a.seriesIter
 }
 
 func (a *kAggregate) GetPool() *model.VectorPool {
@@ -166,24 +166,22 @@ func (a *kAggregate) Explain() (me string, next []model.VectorOperator) {
 }
 
 func (a *kAggregate) init(ctx context.Context) error {
-	series, err := a.next.Series(ctx)
-	if err != nil {
-		return err
-	}
+	series := a.next.Series(ctx)
 	var (
 		// heapsHash is a map of hash of the series to output samples heap for that series.
 		heapsHash = make(map[uint64]*samplesHeap)
 		// hashingBuf is a buffer used for metric hashing.
 		hashingBuf = make([]byte, 1024)
 		// builder is a scratch builder used for creating output series.
-		builder labels.ScratchBuilder
+		builder    labels.ScratchBuilder
+		seriesCopy = make([]labels.Labels, 0, series.Size())
 	)
 	labelsMap := make(map[string]struct{})
 	for _, lblName := range a.labels {
 		labelsMap[lblName] = struct{}{}
 	}
-	for i := 0; i < len(series); i++ {
-		hash, _, _ := hashMetric(builder, series[i], !a.by, a.labels, labelsMap, hashingBuf)
+	for series.Next() {
+		hash, _, _ := hashMetric(builder, series.At(), !a.by, a.labels, labelsMap, hashingBuf)
 		h, ok := heapsHash[hash]
 		if !ok {
 			h = &samplesHeap{compare: a.compare}
@@ -191,9 +189,10 @@ func (a *kAggregate) init(ctx context.Context) error {
 			a.heaps = append(a.heaps, h)
 		}
 		a.inputToHeap = append(a.inputToHeap, h)
+		seriesCopy = append(seriesCopy, series.At())
 	}
-	a.vectorPool.SetStepSize(len(series))
-	a.series = series
+	a.vectorPool.SetStepSize(series.Size())
+	a.seriesIter = model.NewLabelSliceIterator(seriesCopy)
 	return nil
 }
 

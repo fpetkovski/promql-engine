@@ -49,7 +49,7 @@ func (e *Execution) Analyze() (model.OperatorTelemetry, []model.ObservableVector
 	return e, nil
 }
 
-func (e *Execution) Series(ctx context.Context) ([]labels.Labels, error) {
+func (e *Execution) Series(ctx context.Context) model.LabelsIterator {
 	return e.vectorSelector.Series(ctx)
 }
 

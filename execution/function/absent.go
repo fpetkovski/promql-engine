@@ -5,7 +5,6 @@ package function
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -15,9 +14,7 @@ import (
 )
 
 type absentOperator struct {
-	once     sync.Once
 	funcExpr *parser.Call
-	series   []labels.Labels
 	pool     *model.VectorPool
 	next     model.VectorOperator
 	model.OperatorTelemetry
@@ -36,42 +33,34 @@ func (o *absentOperator) Explain() (me string, next []model.VectorOperator) {
 	return "[*absentOperator]", []model.VectorOperator{}
 }
 
-func (o *absentOperator) Series(_ context.Context) ([]labels.Labels, error) {
-	o.loadSeries()
-	return o.series, nil
-}
+func (o *absentOperator) Series(_ context.Context) model.LabelsIterator {
+	o.pool.SetStepSize(1)
 
-func (o *absentOperator) loadSeries() {
-	o.once.Do(func() {
-		o.pool.SetStepSize(1)
+	// https://github.com/prometheus/prometheus/blob/main/promql/functions.go#L1385
+	var lm []*labels.Matcher
+	switch n := o.funcExpr.Args[0].(type) {
+	case *parser.VectorSelector:
+		lm = n.LabelMatchers
+	case *parser.MatrixSelector:
+		lm = n.VectorSelector.(*parser.VectorSelector).LabelMatchers
+	default:
+		return model.NewLabelSliceIterator([]labels.Labels{labels.EmptyLabels()})
+	}
 
-		// https://github.com/prometheus/prometheus/blob/main/promql/functions.go#L1385
-		var lm []*labels.Matcher
-		switch n := o.funcExpr.Args[0].(type) {
-		case *parser.VectorSelector:
-			lm = n.LabelMatchers
-		case *parser.MatrixSelector:
-			lm = n.VectorSelector.(*parser.VectorSelector).LabelMatchers
-		default:
-			o.series = []labels.Labels{labels.EmptyLabels()}
-			return
+	has := make(map[string]bool)
+	lmap := make(map[string]string)
+	for _, l := range lm {
+		if l.Name == labels.MetricName {
+			continue
 		}
-
-		has := make(map[string]bool)
-		lmap := make(map[string]string)
-		for _, l := range lm {
-			if l.Name == labels.MetricName {
-				continue
-			}
-			if l.Type == labels.MatchEqual && !has[l.Name] {
-				lmap[l.Name] = l.Value
-				has[l.Name] = true
-			} else {
-				delete(lmap, l.Name)
-			}
+		if l.Type == labels.MatchEqual && !has[l.Name] {
+			lmap[l.Name] = l.Value
+			has[l.Name] = true
+		} else {
+			delete(lmap, l.Name)
 		}
-		o.series = []labels.Labels{labels.FromMap(lmap)}
-	})
+	}
+	return model.NewLabelSliceIterator([]labels.Labels{labels.FromMap(lmap)})
 }
 
 func (o *absentOperator) GetPool() *model.VectorPool {
@@ -84,7 +73,6 @@ func (o *absentOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 		return nil, ctx.Err()
 	default:
 	}
-	o.loadSeries()
 	start := time.Now()
 
 	vectors, err := o.next.Next(ctx)

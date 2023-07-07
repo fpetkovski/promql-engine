@@ -59,9 +59,9 @@ func (o *numberLiteralSelector) Explain() (me string, next []model.VectorOperato
 	return fmt.Sprintf("[*numberLiteralSelector] %v", o.val), nil
 }
 
-func (o *numberLiteralSelector) Series(context.Context) ([]labels.Labels, error) {
-	o.loadSeries()
-	return o.series, nil
+func (o *numberLiteralSelector) Series(context.Context) model.LabelsIterator {
+	o.vectorPool.SetStepSize(len(o.series))
+	return model.NewLabelSliceIterator(make([]labels.Labels, 1))
 }
 
 func (o *numberLiteralSelector) GetPool() *model.VectorPool {
@@ -79,8 +79,6 @@ func (o *numberLiteralSelector) Next(ctx context.Context) ([]model.StepVector, e
 	if o.currentStep > o.maxt {
 		return nil, nil
 	}
-
-	o.loadSeries()
 
 	ts := o.currentStep
 	vectors := o.vectorPool.GetVectorBatch()
@@ -101,12 +99,4 @@ func (o *numberLiteralSelector) Next(ctx context.Context) ([]model.StepVector, e
 	o.AddExecutionTimeTaken(time.Since(start))
 
 	return vectors, nil
-}
-
-func (o *numberLiteralSelector) loadSeries() {
-	// If number literal is included within function, []labels.labels must be initialized.
-	o.once.Do(func() {
-		o.series = make([]labels.Labels, 1)
-		o.vectorPool.SetStepSize(len(o.series))
-	})
 }

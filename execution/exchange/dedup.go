@@ -5,7 +5,6 @@ package exchange
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
@@ -30,9 +29,6 @@ type dedupCache []dedupSample
 // if multiple samples with the same ID are present in a StepVector, dedupOperator
 // will keep the last sample in that vector.
 type dedupOperator struct {
-	once   sync.Once
-	series []labels.Labels
-
 	pool *model.VectorPool
 	next model.VectorOperator
 	// outputIndex is a slice that is used as an index from input sample ID to output sample ID.
@@ -60,13 +56,7 @@ func (d *dedupOperator) Analyze() (model.OperatorTelemetry, []model.ObservableVe
 }
 
 func (d *dedupOperator) Next(ctx context.Context) ([]model.StepVector, error) {
-	var err error
-	d.once.Do(func() { err = d.loadSeries(ctx) })
-	if err != nil {
-		return nil, err
-	}
 	start := time.Now()
-
 	in, err := d.next.Next(ctx)
 	if err != nil {
 		return nil, err
@@ -110,40 +100,23 @@ func (d *dedupOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 	return result, nil
 }
 
-func (d *dedupOperator) Series(ctx context.Context) ([]labels.Labels, error) {
-	var err error
-	d.once.Do(func() { err = d.loadSeries(ctx) })
-	if err != nil {
-		return nil, err
-	}
-	return d.series, nil
-}
-
-func (d *dedupOperator) GetPool() *model.VectorPool {
-	return d.pool
-}
-
-func (d *dedupOperator) Explain() (me string, next []model.VectorOperator) {
-	return "[*dedup]", []model.VectorOperator{d.next}
-}
-
-func (d *dedupOperator) loadSeries(ctx context.Context) error {
-	series, err := d.next.Series(ctx)
-	if err != nil {
-		return err
-	}
-
+func (d *dedupOperator) Series(ctx context.Context) model.LabelsIterator {
+	series := d.next.Series(ctx)
 	outputIndex := make(map[uint64]uint64)
-	inputIndex := make([]uint64, len(series))
+	inputIndex := make([]uint64, series.Size())
 	hashBuf := make([]byte, 0, 128)
-	for inputSeriesID, inputSeries := range series {
+	outputSeries := make([]labels.Labels, 0)
+	inputSeriesID := -1
+	for series.Next() {
+		inputSeriesID++
+		inputSeries := series.At()
 		hash := hashSeries(hashBuf, inputSeries)
 
 		inputIndex[inputSeriesID] = hash
 		outputSeriesID, ok := outputIndex[hash]
 		if !ok {
-			outputSeriesID = uint64(len(d.series))
-			d.series = append(d.series, inputSeries)
+			outputSeriesID = uint64(len(outputSeries))
+			outputSeries = append(outputSeries, inputSeries)
 		}
 		outputIndex[hash] = outputSeriesID
 	}
@@ -158,7 +131,15 @@ func (d *dedupOperator) loadSeries(ctx context.Context) error {
 		d.dedupCache[i].t = -1
 	}
 
-	return nil
+	return model.NewLabelSliceIterator(outputSeries)
+}
+
+func (d *dedupOperator) GetPool() *model.VectorPool {
+	return d.pool
+}
+
+func (d *dedupOperator) Explain() (me string, next []model.VectorOperator) {
+	return "[*dedup]", []model.VectorOperator{d.next}
 }
 
 func hashSeries(hashBuf []byte, inputSeries labels.Labels) uint64 {

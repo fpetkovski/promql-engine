@@ -30,7 +30,6 @@ type subqueryOperator struct {
 	subQuery *parser.SubqueryExpr
 
 	onceSeries sync.Once
-	series     []labels.Labels
 	acc        [][]sample
 }
 
@@ -65,9 +64,6 @@ func (o *subqueryOperator) Next(ctx context.Context) ([]model.StepVector, error)
 	}
 	if o.currentStep > o.maxt {
 		return nil, nil
-	}
-	if err := o.initSeries(ctx); err != nil {
-		return nil, err
 	}
 
 ACC:
@@ -111,32 +107,15 @@ ACC:
 	return res, nil
 }
 
-func (o *subqueryOperator) Series(ctx context.Context) ([]labels.Labels, error) {
-	if err := o.initSeries(ctx); err != nil {
-		return nil, err
-	}
-	return o.series, nil
-}
-
-func (o *subqueryOperator) initSeries(ctx context.Context) error {
-	var err error
-	o.onceSeries.Do(func() {
-		var series []labels.Labels
-		series, err = o.next.Series(ctx)
-		if err != nil {
-			return
+func (o *subqueryOperator) Series(ctx context.Context) model.LabelsIterator {
+	series := o.next.Series(ctx)
+	o.acc = make([][]sample, series.Size())
+	var b labels.ScratchBuilder
+	return model.NewProcessingIterator(o.next.Series(ctx), func(l labels.Labels) labels.Labels {
+		if o.funcExpr.Func.Name != "last_over_time" {
+			lbls, _ := extlabels.DropMetricName(series.At(), b)
+			return lbls
 		}
-
-		o.series = make([]labels.Labels, len(series))
-		o.acc = make([][]sample, len(series))
-		var b labels.ScratchBuilder
-		for i, s := range series {
-			lbls := s
-			if o.funcExpr.Func.Name != "last_over_time" {
-				lbls, _ = extlabels.DropMetricName(s, b)
-			}
-			o.series[i] = lbls
-		}
+		return l
 	})
-	return err
 }

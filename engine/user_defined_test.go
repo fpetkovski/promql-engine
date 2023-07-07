@@ -113,11 +113,11 @@ func (c *vectorSelectorOperator) Next(ctx context.Context) ([]model.StepVector, 
 	return vectors, nil
 }
 
-func (c *vectorSelectorOperator) Series(ctx context.Context) ([]labels.Labels, error) {
-	return []labels.Labels{
+func (c *vectorSelectorOperator) Series(ctx context.Context) model.LabelsIterator {
+	return model.NewLabelSliceIterator([]labels.Labels{
 		labels.FromStrings(labels.MetricName, "http_requests_total", "container", "a"),
 		labels.FromStrings(labels.MetricName, "http_requests_total", "container", "b"),
-	}, nil
+	})
 }
 
 func (c *vectorSelectorOperator) GetPool() *model.VectorPool {

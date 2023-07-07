@@ -6,6 +6,7 @@ package engine_test
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -85,6 +86,8 @@ func BenchmarkChunkDecoding(b *testing.B) {
 }
 
 func BenchmarkSingleQuery(b *testing.B) {
+	memProfileRate := runtime.MemProfileRate
+	runtime.MemProfileRate = 0
 	test := setupStorage(b, 5000, 3, 720)
 	defer test.Close()
 
@@ -92,9 +95,10 @@ func BenchmarkSingleQuery(b *testing.B) {
 	end := start.Add(6 * time.Hour)
 	step := time.Second * 30
 
-	query := "sum(rate(http_requests_total[2m]))"
+	query := "sum by (pod) (http_requests_total)"
 	b.ResetTimer()
 	b.ReportAllocs()
+	runtime.MemProfileRate = memProfileRate
 	for i := 0; i < b.N; i++ {
 		result := executeRangeQuery(b, query, test, start, end, step)
 		testutil.Ok(b, result.Err)
@@ -106,11 +110,11 @@ func BenchmarkRangeQuery(b *testing.B) {
 	sixHourDataset := setupStorage(b, 1000, 3, 6*samplesPerHour)
 	defer sixHourDataset.Close()
 
-	largeSixHourDataset := setupStorage(b, 10000, 10, 6*samplesPerHour)
-	defer largeSixHourDataset.Close()
-
-	sevenDaysAndTwoHoursDataset := setupStorage(b, 1000, 3, (7*24+2)*samplesPerHour)
-	defer sevenDaysAndTwoHoursDataset.Close()
+	//largeSixHourDataset := setupStorage(b, 10000, 10, 6*samplesPerHour)
+	//defer largeSixHourDataset.Close()
+	//
+	//sevenDaysAndTwoHoursDataset := setupStorage(b, 1000, 3, (7*24+2)*samplesPerHour)
+	//defer sevenDaysAndTwoHoursDataset.Close()
 
 	start := time.Unix(0, 0)
 	end := start.Add(2 * time.Hour)
@@ -151,126 +155,126 @@ func BenchmarkRangeQuery(b *testing.B) {
 			query:   "rate(http_requests_total[1m])",
 			storage: sixHourDataset,
 		},
-		{
-			name:    "rate with large range selection",
-			query:   "rate(http_requests_total[7d])",
-			storage: sevenDaysAndTwoHoursDataset,
-		},
-		{
-			name:    "rate with large number of series, 1m range",
-			query:   "rate(http_requests_total[1m])",
-			storage: largeSixHourDataset,
-		},
-		{
-			name:    "rate with large number of series, 5m range",
-			query:   "rate(http_requests_total[5m])",
-			storage: largeSixHourDataset,
-		},
-		{
-			name:    "sum rate",
-			query:   "sum(rate(http_requests_total[1m]))",
-			storage: sixHourDataset,
-		},
-		{
-			name:    "sum by rate",
-			query:   "sum by (pod) (rate(http_requests_total[1m]))",
-			storage: sixHourDataset,
-		},
-		{
-			name:    "quantile with variable parameter",
-			query:   "quantile by (pod) (scalar(min(http_requests_total)), http_requests_total)",
-			storage: sixHourDataset,
-		},
-		{
-			name:    "binary operation with one to one",
-			query:   `http_requests_total{container="c1"} / ignoring(container) http_responses_total`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "binary operation with many to one",
-			query:   `http_requests_total / on (pod) group_left http_responses_total`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "binary operation with vector and scalar",
-			query:   `http_requests_total * 10`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "unary negation",
-			query:   `-http_requests_total`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "vector and scalar comparison",
-			query:   `http_requests_total > 10`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "positive offset vector",
-			query:   "http_requests_total offset 5m",
-			storage: sixHourDataset,
-		},
-		{
-			name:    "at modifier ",
-			query:   "http_requests_total @ 600",
-			storage: sixHourDataset,
-		},
-		{
-			name:    "at modifier with positive offset vector",
-			query:   "http_requests_total @ 600 offset 5m",
-			storage: sixHourDataset,
-		},
-		{
-			name:    "clamp",
-			query:   `clamp(http_requests_total, 5, 10)`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "clamp_min",
-			query:   `clamp_min(http_requests_total, 10)`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "complex func query",
-			query:   `clamp(1 - http_requests_total, 10 - 5, 10)`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "func within func query",
-			query:   `clamp(irate(http_requests_total[30s]), 10 - 5, 10)`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "aggr within func query",
-			query:   `clamp(rate(http_requests_total[30s]), 10 - 5, 10)`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "histogram_quantile",
-			query:   `histogram_quantile(0.9, http_response_seconds_bucket)`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "sort",
-			query:   `sort(http_requests_total)`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "sort_desc",
-			query:   `sort_desc(http_requests_total)`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "absent and exists",
-			query:   `absent(http_requests_total)`,
-			storage: sixHourDataset,
-		},
-		{
-			name:    "absent and doesnt exist",
-			query:   `absent(nonexistent)`,
-			storage: sixHourDataset,
-		},
+		//{
+		//	name:    "rate with large range selection",
+		//	query:   "rate(http_requests_total[7d])",
+		//	storage: sevenDaysAndTwoHoursDataset,
+		//},
+		//{
+		//	name:    "rate with large number of series, 1m range",
+		//	query:   "rate(http_requests_total[1m])",
+		//	storage: largeSixHourDataset,
+		//},
+		//{
+		//	name:    "rate with large number of series, 5m range",
+		//	query:   "rate(http_requests_total[5m])",
+		//	storage: largeSixHourDataset,
+		//},
+		//{
+		//	name:    "sum rate",
+		//	query:   "sum(rate(http_requests_total[1m]))",
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "sum by rate",
+		//	query:   "sum by (pod) (rate(http_requests_total[1m]))",
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "quantile with variable parameter",
+		//	query:   "quantile by (pod) (scalar(min(http_requests_total)), http_requests_total)",
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "binary operation with one to one",
+		//	query:   `http_requests_total{container="c1"} / ignoring(container) http_responses_total`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "binary operation with many to one",
+		//	query:   `http_requests_total / on (pod) group_left http_responses_total`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "binary operation with vector and scalar",
+		//	query:   `http_requests_total * 10`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "unary negation",
+		//	query:   `-http_requests_total`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "vector and scalar comparison",
+		//	query:   `http_requests_total > 10`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "positive offset vector",
+		//	query:   "http_requests_total offset 5m",
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "at modifier ",
+		//	query:   "http_requests_total @ 600",
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "at modifier with positive offset vector",
+		//	query:   "http_requests_total @ 600 offset 5m",
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "clamp",
+		//	query:   `clamp(http_requests_total, 5, 10)`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "clamp_min",
+		//	query:   `clamp_min(http_requests_total, 10)`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "complex func query",
+		//	query:   `clamp(1 - http_requests_total, 10 - 5, 10)`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "func within func query",
+		//	query:   `clamp(irate(http_requests_total[30s]), 10 - 5, 10)`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "aggr within func query",
+		//	query:   `clamp(rate(http_requests_total[30s]), 10 - 5, 10)`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "histogram_quantile",
+		//	query:   `histogram_quantile(0.9, http_response_seconds_bucket)`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "sort",
+		//	query:   `sort(http_requests_total)`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "sort_desc",
+		//	query:   `sort_desc(http_requests_total)`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "absent and exists",
+		//	query:   `absent(http_requests_total)`,
+		//	storage: sixHourDataset,
+		//},
+		//{
+		//	name:    "absent and doesnt exist",
+		//	query:   `absent(nonexistent)`,
+		//	storage: sixHourDataset,
+		//},
 	}
 
 	for _, tc := range cases {

@@ -31,12 +31,15 @@ type matrixScanner struct {
 	deltaReduced     bool
 }
 
+func (m matrixScanner) Labels() labels.Labels {
+	return m.labels
+}
+
 type matrixSelector struct {
 	funcExpr *parser.Call
 	storage  engstore.SeriesSelector
 	call     functionCall
 	scanners []matrixScanner
-	series   []labels.Labels
 	once     sync.Once
 
 	vectorPool *model.VectorPool
@@ -116,11 +119,11 @@ func (o *matrixSelector) Explain() (me string, next []model.VectorOperator) {
 	return fmt.Sprintf("[*matrixSelector] {%v}[%s] %v mod %v", o.storage.Matchers(), r, o.shard, o.numShards), nil
 }
 
-func (o *matrixSelector) Series(ctx context.Context) ([]labels.Labels, error) {
+func (o *matrixSelector) Series(ctx context.Context) model.LabelsIterator {
 	if err := o.loadSeries(ctx); err != nil {
-		return nil, err
+		return model.ErrorLabels(err)
 	}
-	return o.series, nil
+	return model.NewLabelsGettersIterator(o.scanners)
 }
 
 func (o *matrixSelector) GetPool() *model.VectorPool {
@@ -231,7 +234,6 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 		}
 
 		o.scanners = make([]matrixScanner, len(series))
-		o.series = make([]labels.Labels, len(series))
 		b := labels.ScratchBuilder{}
 		for i, s := range series {
 			lbls := s.Labels()
@@ -256,7 +258,6 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 				samples:      storage.NewBufferIterator(s.Iterator(nil), selectRange),
 				deltaReduced: o.isExtFunction,
 			}
-			o.series[i] = lbls
 		}
 		o.vectorPool.SetStepSize(len(series))
 	})

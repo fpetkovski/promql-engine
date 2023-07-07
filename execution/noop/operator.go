@@ -6,8 +6,6 @@ package noop
 import (
 	"context"
 
-	"github.com/prometheus/prometheus/model/labels"
-
 	"github.com/thanos-io/promql-engine/execution/model"
 )
 
@@ -17,7 +15,9 @@ func NewOperator() model.VectorOperator { return &operator{} }
 
 func (o operator) Next(ctx context.Context) ([]model.StepVector, error) { return nil, nil }
 
-func (o operator) Series(ctx context.Context) ([]labels.Labels, error) { return nil, nil }
+func (o operator) Series(ctx context.Context) model.LabelsIterator {
+	return model.NewLabelSliceIterator(nil)
+}
 
 func (o operator) GetPool() *model.VectorPool { return nil }
 

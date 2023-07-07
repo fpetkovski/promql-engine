@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -28,9 +27,6 @@ const (
 
 // scalarOperator evaluates expressions where one operand is a scalarOperator.
 type scalarOperator struct {
-	seriesOnce sync.Once
-	series     []labels.Labels
-
 	pool          *model.VectorPool
 	scalar        model.VectorOperator
 	next          model.VectorOperator
@@ -106,13 +102,20 @@ func (o *scalarOperator) Explain() (me string, next []model.VectorOperator) {
 	return fmt.Sprintf("[*scalarOperator] %s", parser.ItemTypeStr[o.opType]), []model.VectorOperator{o.next, o.scalar}
 }
 
-func (o *scalarOperator) Series(ctx context.Context) ([]labels.Labels, error) {
-	var err error
-	o.seriesOnce.Do(func() { err = o.loadSeries(ctx) })
-	if err != nil {
-		return nil, err
-	}
-	return o.series, nil
+func (o *scalarOperator) Series(ctx context.Context) model.LabelsIterator {
+	vectorSeries := o.next.Series(ctx)
+	b := labels.ScratchBuilder{}
+	return model.NewProcessingIterator(vectorSeries, func(lbls labels.Labels) labels.Labels {
+		if !lbls.IsEmpty() {
+			lbls := lbls
+			if shouldDropMetricName(o.opType, o.returnBool) {
+				lbls, _ = extlabels.DropMetricName(lbls, b)
+			}
+			return lbls
+		} else {
+			return lbls
+		}
+	})
 }
 
 func (o *scalarOperator) Next(ctx context.Context) ([]model.StepVector, error) {
@@ -129,10 +132,6 @@ func (o *scalarOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 	}
 	if in == nil {
 		return nil, nil
-	}
-	o.seriesOnce.Do(func() { err = o.loadSeries(ctx) })
-	if err != nil {
-		return nil, err
 	}
 
 	scalarIn, err := o.scalar.Next(ctx)
@@ -188,29 +187,6 @@ func (o *scalarOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 
 func (o *scalarOperator) GetPool() *model.VectorPool {
 	return o.pool
-}
-
-func (o *scalarOperator) loadSeries(ctx context.Context) error {
-	vectorSeries, err := o.next.Series(ctx)
-	if err != nil {
-		return err
-	}
-	series := make([]labels.Labels, len(vectorSeries))
-	b := labels.ScratchBuilder{}
-	for i := range vectorSeries {
-		if !vectorSeries[i].IsEmpty() {
-			lbls := vectorSeries[i]
-			if shouldDropMetricName(o.opType, o.returnBool) {
-				lbls, _ = extlabels.DropMetricName(lbls, b)
-			}
-			series[i] = lbls
-		} else {
-			series[i] = vectorSeries[i]
-		}
-	}
-
-	o.series = series
-	return nil
 }
 
 type getOperandsFunc func(v model.StepVector, i int, scalar float64) [2]float64

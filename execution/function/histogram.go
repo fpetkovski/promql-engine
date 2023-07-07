@@ -31,10 +31,10 @@ type histogramOperator struct {
 
 	funcArgs parser.Expressions
 
-	once     sync.Once
-	series   []labels.Labels
-	scalarOp model.VectorOperator
-	vectorOp model.VectorOperator
+	once       sync.Once
+	seriesIter model.LabelsIterator
+	scalarOp   model.VectorOperator
+	vectorOp   model.VectorOperator
 
 	// scalarPoints is a reusable buffer for points from the first argument of histogram_quantile.
 	scalarPoints []float64
@@ -66,14 +66,14 @@ func (o *histogramOperator) Explain() (me string, next []model.VectorOperator) {
 	return fmt.Sprintf("[*functionOperator] histogram_quantile(%v)", o.funcArgs), next
 }
 
-func (o *histogramOperator) Series(ctx context.Context) ([]labels.Labels, error) {
+func (o *histogramOperator) Series(ctx context.Context) model.LabelsIterator {
 	var err error
 	o.once.Do(func() { err = o.loadSeries(ctx) })
 	if err != nil {
-		return nil, err
+		return model.ErrorLabels(err)
 	}
 
-	return o.series, nil
+	return o.seriesIter
 }
 
 func (o *histogramOperator) GetPool() *model.VectorPool {
@@ -179,32 +179,24 @@ func (o *histogramOperator) processInputSeries(vectors []model.StepVector) ([]mo
 }
 
 func (o *histogramOperator) loadSeries(ctx context.Context) error {
-	series, err := o.vectorOp.Series(ctx)
-	if err != nil {
-		return err
-	}
-	if extlabels.ContainsDuplicateLabelSetAfterDroppingName(series) {
-		return extlabels.ErrDuplicateLabelSet
-	}
-
+	series := o.vectorOp.Series(ctx)
 	var (
 		hashBuf      = make([]byte, 0, 256)
 		hasher       = xxhash.New()
-		seriesHashes = make(map[uint64]int, len(series))
-	)
+		seriesHashes = make(map[uint64]int, series.Size())
 
-	o.series = make([]labels.Labels, 0)
-	o.outputIndex = make([]*histogramSeries, len(series))
-	b := labels.ScratchBuilder{}
-	for i, s := range series {
+		outputSeries = make([]labels.Labels, 0)
+		builder      = labels.ScratchBuilder{}
+		i            int
+	)
+	o.outputIndex = make([]*histogramSeries, series.Size())
+	for series.Next() {
 		hasBucketValue := true
-		lbls, bucketLabel := extlabels.DropBucketLabel(s, b)
+		lbls, bucketLabel := extlabels.DropBucketLabel(series.At(), builder)
 		value, err := strconv.ParseFloat(bucketLabel.Value, 64)
 		if err != nil {
 			hasBucketValue = false
 		}
-
-		lbls, _ = extlabels.DropMetricName(lbls, b)
 		hasher.Reset()
 		hashBuf = lbls.Bytes(hashBuf)
 		if _, err := hasher.Write(hashBuf); err != nil {
@@ -214,8 +206,8 @@ func (o *histogramOperator) loadSeries(ctx context.Context) error {
 		seriesHash := hasher.Sum64()
 		seriesID, ok := seriesHashes[seriesHash]
 		if !ok {
-			o.series = append(o.series, lbls)
-			seriesID = len(o.series) - 1
+			outputSeries = append(outputSeries, lbls)
+			seriesID = len(outputSeries) - 1
 			seriesHashes[seriesHash] = seriesID
 		}
 
@@ -224,9 +216,11 @@ func (o *histogramOperator) loadSeries(ctx context.Context) error {
 			upperBound:     value,
 			hasBucketValue: hasBucketValue,
 		}
+		i++
 	}
-	o.seriesBuckets = make([]buckets, len(o.series))
-	o.pool.SetStepSize(len(o.series))
+	o.seriesBuckets = make([]buckets, len(outputSeries))
+	o.pool.SetStepSize(len(outputSeries))
+	o.seriesIter = model.NewLabelSliceIterator(outputSeries)
 	return nil
 }
 

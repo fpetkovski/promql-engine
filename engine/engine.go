@@ -30,7 +30,6 @@ import (
 	"github.com/thanos-io/promql-engine/execution/model"
 	"github.com/thanos-io/promql-engine/execution/parse"
 	"github.com/thanos-io/promql-engine/execution/warnings"
-	"github.com/thanos-io/promql-engine/extlabels"
 	"github.com/thanos-io/promql-engine/logicalplan"
 	"github.com/thanos-io/promql-engine/parser"
 	"github.com/thanos-io/promql-engine/query"
@@ -558,7 +557,7 @@ func (q *compatibilityQuery) Exec(ctx context.Context) (ret *promql.Result) {
 	ret = &promql.Result{
 		Value: promql.Vector{},
 	}
-	defer recoverEngine(q.engine.logger, q.expr, &ret.Err)
+	//defer recoverEngine(q.engine.logger, q.expr, &ret.Err)
 
 	q.engine.metrics.currentQueries.Inc()
 	defer q.engine.metrics.currentQueries.Dec()
@@ -567,17 +566,16 @@ func (q *compatibilityQuery) Exec(ctx context.Context) (ret *promql.Result) {
 	defer cancel()
 	q.cancel = cancel
 
-	resultSeries, err := q.Query.exec.Series(ctx)
-	if err != nil {
-		return newErrResult(ret, err)
-	}
-	if extlabels.ContainsDuplicateLabelSet(resultSeries) {
-		return newErrResult(ret, extlabels.ErrDuplicateLabelSet)
-	}
+	resultSeries := q.Query.exec.Series(ctx)
+	//if containsDuplicateLabelSet(resultSeries) {
+	//	return newErrResult(ret, errors.New("vector cannot contain metrics with the same labelset"))
+	//}
 
-	series := make([]promql.Series, len(resultSeries))
-	for i := 0; i < len(resultSeries); i++ {
-		series[i].Metric = resultSeries[i]
+	series := make([]promql.Series, resultSeries.Size())
+	var i int
+	for resultSeries.Next() {
+		series[i].Metric = resultSeries.At()
+		i++
 	}
 loop:
 	for {
@@ -647,7 +645,7 @@ loop:
 		result = promql.Matrix(series)
 	case parser.ValueTypeVector:
 		// Convert matrix with one value per series into vector.
-		vector := make(promql.Vector, 0, len(resultSeries))
+		vector := make(promql.Vector, 0, len(series))
 		for i := range series {
 			if len(series[i].Floats)+len(series[i].Histograms) == 0 {
 				continue

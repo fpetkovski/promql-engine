@@ -26,11 +26,11 @@ type aggregateTable interface {
 type scalarTable struct {
 	timestamp    int64
 	inputs       []uint64
-	outputs      []*model.Series
+	outputs      []model.Series
 	accumulators []*accumulator
 }
 
-func newScalarTables(stepsBatch int, inputCache []uint64, outputCache []*model.Series, newAccumulator newAccumulatorFunc) []aggregateTable {
+func newScalarTables(stepsBatch int, inputCache []uint64, outputCache []model.Series, newAccumulator newAccumulatorFunc) []aggregateTable {
 	tables := make([]aggregateTable, stepsBatch)
 	for i := 0; i < len(tables); i++ {
 		tables[i] = newScalarTable(inputCache, outputCache, newAccumulator)
@@ -38,7 +38,7 @@ func newScalarTables(stepsBatch int, inputCache []uint64, outputCache []*model.S
 	return tables
 }
 
-func newScalarTable(inputSampleIDs []uint64, outputs []*model.Series, newAccumulator newAccumulatorFunc) *scalarTable {
+func newScalarTable(inputSampleIDs []uint64, outputs []model.Series, newAccumulator newAccumulatorFunc) *scalarTable {
 	accumulators := make([]*accumulator, len(outputs))
 	for i := 0; i < len(accumulators); i++ {
 		accumulators[i] = newAccumulator()

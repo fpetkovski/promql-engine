@@ -8,8 +8,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/prometheus/prometheus/model/labels"
-
 	"github.com/thanos-io/promql-engine/execution/model"
 )
 
@@ -32,8 +30,8 @@ func (o *scalarFunctionOperator) Explain() (me string, next []model.VectorOperat
 	return "[*scalarFunctionOperator]", []model.VectorOperator{}
 }
 
-func (o *scalarFunctionOperator) Series(ctx context.Context) ([]labels.Labels, error) {
-	return nil, nil
+func (o *scalarFunctionOperator) Series(ctx context.Context) model.LabelsIterator {
+	return model.EmptyLabels()
 }
 
 func (o *scalarFunctionOperator) GetPool() *model.VectorPool {

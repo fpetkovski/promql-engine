@@ -144,7 +144,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 		case parser.ADD:
 			return next, nil
 		case parser.SUB:
-			return unary.NewUnaryNegation(next, opts.StepsBatch)
+			return unary.NewUnaryNegation(next)
 		default:
 			// This shouldn't happen as Op was validated when parsing already
 			// https://github.com/prometheus/prometheus/blob/v2.38.0/promql/parser/parse.go#L573.
@@ -161,7 +161,6 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 			return nil, err
 		}
 		return step_invariant.NewStepInvariantOperator(model.NewVectorPoolWithSize(opts.StepsBatch, 1), next, e.Expr, opts)
-
 	case logicalplan.Deduplicate:
 		// The Deduplicate operator will deduplicate samples using a last-sample-wins strategy.
 		// Sorting engines by MaxT ensures that samples produced due to

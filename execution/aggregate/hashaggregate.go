@@ -35,7 +35,6 @@ type aggregate struct {
 
 	once           sync.Once
 	tables         []aggregateTable
-	series         []labels.Labels
 	newAccumulator newAccumulatorFunc
 	stepsBatch     int
 	workers        worker.Group
@@ -100,14 +99,17 @@ func (a *aggregate) Explain() (me string, next []model.VectorOperator) {
 	return fmt.Sprintf("[*aggregate] %v without (%v)", a.aggregation.String(), a.labels), ops
 }
 
-func (a *aggregate) Series(ctx context.Context) ([]labels.Labels, error) {
-	var err error
-	a.once.Do(func() { err = a.initializeTables(ctx) })
+func (a *aggregate) Series(ctx context.Context) model.LabelsIterator {
+	var (
+		err    error
+		series model.LabelsIterator
+	)
+	a.once.Do(func() { series, err = a.initializeTables(ctx) })
 	if err != nil {
-		return nil, err
+		return model.ErrorLabels(err)
 	}
 
-	return a.series, nil
+	return series
 }
 
 func (a *aggregate) GetPool() *model.VectorPool {
@@ -130,7 +132,7 @@ func (a *aggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 	}
 	defer a.next.GetPool().PutVectors(in)
 
-	a.once.Do(func() { err = a.initializeTables(ctx) })
+	a.once.Do(func() { _, err = a.initializeTables(ctx) })
 	if err != nil {
 		return nil, err
 	}
@@ -169,10 +171,10 @@ func (a *aggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 	return result, nil
 }
 
-func (a *aggregate) initializeTables(ctx context.Context) error {
+func (a *aggregate) initializeTables(ctx context.Context) (model.LabelsIterator, error) {
 	var (
 		tables []aggregateTable
-		series []labels.Labels
+		series model.LabelsIterator
 		err    error
 	)
 
@@ -182,14 +184,13 @@ func (a *aggregate) initializeTables(ctx context.Context) error {
 		tables, series, err = a.initializeScalarTables(ctx)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	a.tables = tables
-	a.series = series
-	a.vectorPool.SetStepSize(len(a.series))
+	a.vectorPool.SetStepSize(series.Size())
 	a.workers.Start(ctx)
 
-	return nil
+	return series, nil
 }
 
 func (a *aggregate) workerTask(workerID int, arg float64, vector model.StepVector) model.StepVector {
@@ -198,31 +199,27 @@ func (a *aggregate) workerTask(workerID int, arg float64, vector model.StepVecto
 	return table.toVector(a.vectorPool)
 }
 
-func (a *aggregate) initializeVectorizedTables(ctx context.Context) ([]aggregateTable, []labels.Labels, error) {
+func (a *aggregate) initializeVectorizedTables(ctx context.Context) ([]aggregateTable, model.LabelsIterator, error) {
 	tables, err := newVectorizedTables(a.stepsBatch, a.aggregation)
 	if errors.Is(err, parse.ErrNotSupportedExpr) {
 		return a.initializeScalarTables(ctx)
 	}
-
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return tables, []labels.Labels{{}}, nil
+	return tables, model.NewLabelSliceIterator([]labels.Labels{{}}), nil
 }
 
-func (a *aggregate) initializeScalarTables(ctx context.Context) ([]aggregateTable, []labels.Labels, error) {
-	series, err := a.next.Series(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
+func (a *aggregate) initializeScalarTables(ctx context.Context) ([]aggregateTable, model.LabelsIterator, error) {
+	series := a.next.Series(ctx)
 	var (
 		// inputCache is an index from input seriesID to output seriesID.
-		inputCache = make([]uint64, len(series))
+		inputCache = make([]uint64, series.Size())
 		// outputMap is used to map from the hash of an input series to an output series.
-		outputMap = make(map[uint64]*model.Series)
+		outputMap = make(map[uint64]model.Series)
 		// outputCache is an index from output seriesID to output series.
-		outputCache = make([]*model.Series, 0)
+		outputCache = make([]model.Series, 0)
 		// hashingBuf is a reusable buffer for hashing input series.
 		hashingBuf = make([]byte, 1024)
 		// builder is a reusable labels builder for output series.
@@ -232,11 +229,12 @@ func (a *aggregate) initializeScalarTables(ctx context.Context) ([]aggregateTabl
 	for _, lblName := range a.labels {
 		labelsMap[lblName] = struct{}{}
 	}
-	for i := 0; i < len(series); i++ {
-		hash, _, lbls := hashMetric(builder, series[i], !a.by, a.labels, labelsMap, hashingBuf)
+	var i int
+	for series.Next() {
+		hash, _, lbls := hashMetric(builder, series.At(), !a.by, a.labels, labelsMap, hashingBuf)
 		output, ok := outputMap[hash]
 		if !ok {
-			output = &model.Series{
+			output = model.Series{
 				Metric: lbls,
 				ID:     uint64(len(outputCache)),
 			}
@@ -245,13 +243,9 @@ func (a *aggregate) initializeScalarTables(ctx context.Context) ([]aggregateTabl
 		}
 
 		inputCache[i] = output.ID
+		i++
 	}
 	tables := newScalarTables(a.stepsBatch, inputCache, outputCache, a.newAccumulator)
 
-	series = make([]labels.Labels, len(outputCache))
-	for i := 0; i < len(outputCache); i++ {
-		series[i] = outputCache[i].Metric
-	}
-
-	return tables, series, nil
+	return tables, model.NewLabelsGettersIterator(outputCache), nil
 }

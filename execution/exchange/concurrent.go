@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/thanos-io/promql-engine/execution/model"
-
-	"github.com/prometheus/prometheus/model/labels"
 )
 
 type maybeStepVector struct {
@@ -50,7 +48,7 @@ func (c *concurrencyOperator) Explain() (me string, next []model.VectorOperator)
 	return fmt.Sprintf("[*concurrencyOperator(buff=%v)]", c.bufferSize), []model.VectorOperator{c.next}
 }
 
-func (c *concurrencyOperator) Series(ctx context.Context) ([]labels.Labels, error) {
+func (c *concurrencyOperator) Series(ctx context.Context) model.LabelsIterator {
 	return c.next.Series(ctx)
 }
 

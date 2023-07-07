@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/efficientgo/core/errors"
-	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/thanos-io/promql-engine/execution/model"
 	"github.com/thanos-io/promql-engine/parser"
@@ -21,8 +20,6 @@ type stepInvariantOperator struct {
 	next        model.VectorOperator
 	cacheResult bool
 
-	seriesOnce      sync.Once
-	series          []labels.Labels
 	cacheVectorOnce sync.Once
 	cachedVector    model.StepVector
 
@@ -82,16 +79,8 @@ func NewStepInvariantOperator(
 	return u, nil
 }
 
-func (u *stepInvariantOperator) Series(ctx context.Context) ([]labels.Labels, error) {
-	var err error
-	u.seriesOnce.Do(func() {
-		u.series, err = u.next.Series(ctx)
-		u.vectorPool.SetStepSize(len(u.series))
-	})
-	if err != nil {
-		return nil, err
-	}
-	return u.series, nil
+func (u *stepInvariantOperator) Series(ctx context.Context) model.LabelsIterator {
+	return u.next.Series(ctx)
 }
 
 func (u *stepInvariantOperator) GetPool() *model.VectorPool {
