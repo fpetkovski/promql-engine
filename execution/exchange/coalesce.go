@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/efficientgo/core/errors"
-	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/thanos-io/promql-engine/execution/model"
 	"github.com/thanos-io/promql-engine/query"
@@ -33,8 +32,8 @@ func (c errorChan) getError() error {
 // coalesce guarantees that samples from different input vectors will be added to the output in the same order
 // as the input vectors themselves are provided in NewCoalesce.
 type coalesce struct {
-	once   sync.Once
-	series []labels.Labels
+	once       sync.Once
+	labelsIter model.LabelsIterator
 
 	pool      *model.VectorPool
 	wg        sync.WaitGroup
@@ -81,13 +80,13 @@ func (c *coalesce) GetPool() *model.VectorPool {
 	return c.pool
 }
 
-func (c *coalesce) Series(ctx context.Context) ([]labels.Labels, error) {
+func (c *coalesce) Series(ctx context.Context) model.LabelsIterator {
 	var err error
 	c.once.Do(func() { err = c.loadSeries(ctx) })
 	if err != nil {
-		return nil, err
+		return model.ErrorLabels(err)
 	}
-	return c.series, nil
+	return c.labelsIter
 }
 
 func (c *coalesce) Next(ctx context.Context) ([]model.StepVector, error) {
@@ -163,7 +162,7 @@ func (c *coalesce) Next(ctx context.Context) ([]model.StepVector, error) {
 func (c *coalesce) loadSeries(ctx context.Context) error {
 	var wg sync.WaitGroup
 	var numSeries uint64
-	allSeries := make([][]labels.Labels, len(c.operators))
+	allSeries := make([]model.LabelsIterator, len(c.operators))
 	errChan := make(errorChan, len(c.operators))
 	for i := 0; i < len(c.operators); i++ {
 		wg.Add(1)
@@ -181,14 +180,9 @@ func (c *coalesce) loadSeries(ctx context.Context) error {
 				}
 
 			}()
-			series, err := c.operators[i].Series(ctx)
-			if err != nil {
-				errChan <- err
-				return
-			}
-
+			series := c.operators[i].Series(ctx)
 			allSeries[i] = series
-			atomic.AddUint64(&numSeries, uint64(len(series)))
+			atomic.AddUint64(&numSeries, uint64(series.Size()))
 		}(i)
 	}
 	wg.Wait()
@@ -198,12 +192,11 @@ func (c *coalesce) loadSeries(ctx context.Context) error {
 	}
 
 	c.sampleOffsets = make([]uint64, len(c.operators))
-	c.series = make([]labels.Labels, 0, numSeries)
-	for i, series := range allSeries {
-		c.sampleOffsets[i] = uint64(len(c.series))
-		c.series = append(c.series, series...)
+	for i := 1; i < len(allSeries); i++ {
+		c.sampleOffsets[i] = c.sampleOffsets[i-1] + uint64(allSeries[i-1].Size())
 	}
 
-	c.pool.SetStepSize(len(c.series))
+	c.labelsIter = model.NewMergingIterator(allSeries)
+	c.pool.SetStepSize(int(numSeries))
 	return nil
 }

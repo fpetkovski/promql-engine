@@ -5,7 +5,6 @@ package unary
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -16,9 +15,6 @@ import (
 
 type unaryNegation struct {
 	next model.VectorOperator
-	once sync.Once
-
-	series []labels.Labels
 	model.OperatorTelemetry
 }
 
@@ -26,10 +22,7 @@ func (u *unaryNegation) Explain() (me string, next []model.VectorOperator) {
 	return "[*unaryNegation]", []model.VectorOperator{u.next}
 }
 
-func NewUnaryNegation(
-	next model.VectorOperator,
-	stepsBatch int,
-) (model.VectorOperator, error) {
+func NewUnaryNegation(next model.VectorOperator) (model.VectorOperator, error) {
 	u := &unaryNegation{
 		next:              next,
 		OperatorTelemetry: &model.TrackedTelemetry{},
@@ -37,6 +30,7 @@ func NewUnaryNegation(
 
 	return u, nil
 }
+
 func (u *unaryNegation) Analyze() (model.OperatorTelemetry, []model.ObservableVectorOperator) {
 	u.SetName("[*unaryNegation]")
 	next := make([]model.ObservableVectorOperator, 0, 1)
@@ -46,28 +40,10 @@ func (u *unaryNegation) Analyze() (model.OperatorTelemetry, []model.ObservableVe
 	return u, next
 }
 
-func (u *unaryNegation) Series(ctx context.Context) ([]labels.Labels, error) {
-	if err := u.loadSeries(ctx); err != nil {
-		return nil, err
-	}
-	return u.series, nil
-}
-
-func (u *unaryNegation) loadSeries(ctx context.Context) error {
-	var err error
-	u.once.Do(func() {
-		var series []labels.Labels
-		series, err = u.next.Series(ctx)
-		if err != nil {
-			return
-		}
-		u.series = make([]labels.Labels, len(series))
-		for i := range series {
-			lbls := labels.NewBuilder(series[i]).Del(labels.MetricName).Labels()
-			u.series[i] = lbls
-		}
+func (u *unaryNegation) Series(ctx context.Context) model.LabelsIterator {
+	return model.NewProcessingIterator(u.next.Series(ctx), func(l labels.Labels) labels.Labels {
+		return labels.NewBuilder(l).Del(labels.MetricName).Labels()
 	})
-	return err
 }
 
 func (u *unaryNegation) GetPool() *model.VectorPool {

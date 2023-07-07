@@ -38,8 +38,8 @@ func (o *noArgFunctionOperator) Explain() (me string, next []model.VectorOperato
 	return fmt.Sprintf("[*noArgFunctionOperator] %v()", o.funcExpr.Func.Name), []model.VectorOperator{}
 }
 
-func (o *noArgFunctionOperator) Series(_ context.Context) ([]labels.Labels, error) {
-	return o.series, nil
+func (o *noArgFunctionOperator) Series(_ context.Context) model.LabelsIterator {
+	return model.NewLabelSliceIterator(o.series)
 }
 
 func (o *noArgFunctionOperator) GetPool() *model.VectorPool {

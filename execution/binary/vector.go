@@ -32,8 +32,6 @@ type vectorOperator struct {
 	lhSampleIDs []labels.Labels
 	rhSampleIDs []labels.Labels
 
-	// series contains the output series of the operator
-	series []labels.Labels
 	// The outputCache is an internal cache used to calculate
 	// the binary operation of the lhs and rhs operator.
 	outputCache []outputSample
@@ -102,34 +100,31 @@ func (o *vectorOperator) Explain() (me string, next []model.VectorOperator) {
 	return fmt.Sprintf("[*vectorOperator] %s %v ignoring %v group %v", parser.ItemTypeStr[o.opType], o.matching.Card.String(), o.matching.On, o.matching.Include), []model.VectorOperator{o.lhs, o.rhs}
 }
 
-func (o *vectorOperator) Series(ctx context.Context) ([]labels.Labels, error) {
-	var err error
-	o.once.Do(func() { err = o.initOutputs(ctx) })
-	if err != nil {
-		return nil, err
-	}
-
-	return o.series, nil
-}
-
-func (o *vectorOperator) initOutputs(ctx context.Context) error {
+func (o *vectorOperator) Series(ctx context.Context) model.LabelsIterator {
 	var highCardSide []labels.Labels
 	var errChan = make(chan error, 1)
 	go func() {
 		var err error
-		highCardSide, err = o.lhs.Series(ctx)
-		if err != nil {
+		it := o.lhs.Series(ctx)
+		for it.Next() {
+			highCardSide = append(highCardSide, it.At())
+		}
+		if it.Err() != nil {
 			errChan <- err
 		}
 		close(errChan)
 	}()
 
-	lowCardSide, err := o.rhs.Series(ctx)
-	if err != nil {
-		return err
+	var lowCardSide []labels.Labels
+	it := o.rhs.Series(ctx)
+	for it.Next() {
+		lowCardSide = append(lowCardSide, it.At())
+	}
+	if it.Err() != nil {
+		return model.ErrorLabels(it.Err())
 	}
 	if err := <-errChan; err != nil {
-		return err
+		return model.ErrorLabels(it.Err())
 	}
 
 	o.lhSampleIDs = highCardSide
@@ -154,7 +149,6 @@ func (o *vectorOperator) initOutputs(ctx context.Context) error {
 	for _, s := range output {
 		series[s.ID] = s.Metric
 	}
-	o.series = series
 
 	o.outputCache = make([]outputSample, len(series))
 	for i := range o.outputCache {
@@ -171,7 +165,7 @@ func (o *vectorOperator) initOutputs(ctx context.Context) error {
 		lowCardinalityIndex(lowCardOutputIndex),
 	)
 
-	return nil
+	return model.NewLabelSliceIterator(series)
 }
 
 func (o *vectorOperator) Next(ctx context.Context) ([]model.StepVector, error) {
@@ -206,12 +200,6 @@ func (o *vectorOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 	// We don't have a concept of closing an operator yet.
 	if len(lhs) == 0 || len(rhs) == 0 {
 		return nil, nil
-	}
-
-	var err error
-	o.once.Do(func() { err = o.initOutputs(ctx) })
-	if err != nil {
-		return nil, err
 	}
 
 	batch := o.pool.GetVectorBatch()

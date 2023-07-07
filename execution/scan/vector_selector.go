@@ -29,10 +29,13 @@ type vectorScanner struct {
 	samples   *storage.MemoizedSeriesIterator
 }
 
+func (v vectorScanner) Labels() labels.Labels {
+	return v.labels
+}
+
 type vectorSelector struct {
 	storage  engstore.SeriesSelector
 	scanners []vectorScanner
-	series   []labels.Labels
 
 	once       sync.Once
 	vectorPool *model.VectorPool
@@ -89,11 +92,11 @@ func (o *vectorSelector) Explain() (me string, next []model.VectorOperator) {
 	return fmt.Sprintf("[*vectorSelector] {%v} %v mod %v", o.storage.Matchers(), o.shard, o.numShards), nil
 }
 
-func (o *vectorSelector) Series(ctx context.Context) ([]labels.Labels, error) {
+func (o *vectorSelector) Series(ctx context.Context) model.LabelsIterator {
 	if err := o.loadSeries(ctx); err != nil {
-		return nil, err
+		return model.ErrorLabels(err)
 	}
-	return o.series, nil
+	return model.NewLabelsGettersIterator(o.scanners)
 }
 
 func (o *vectorSelector) GetPool() *model.VectorPool {
@@ -166,14 +169,12 @@ func (o *vectorSelector) loadSeries(ctx context.Context) error {
 		}
 
 		o.scanners = make([]vectorScanner, len(series))
-		o.series = make([]labels.Labels, len(series))
 		for i, s := range series {
 			o.scanners[i] = vectorScanner{
 				labels:    s.Labels(),
 				signature: s.Signature,
 				samples:   storage.NewMemoizedIterator(s.Iterator(nil), o.lookbackDelta),
 			}
-			o.series[i] = s.Labels()
 		}
 		o.vectorPool.SetStepSize(len(series))
 	})

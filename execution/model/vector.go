@@ -15,6 +15,10 @@ type Series struct {
 	Metric labels.Labels
 }
 
+func (s Series) Labels() labels.Labels {
+	return s.Metric
+}
+
 type StepVector struct {
 	T         int64
 	SampleIDs []uint64

@@ -71,7 +71,6 @@ func NewFunctionOperator(funcExpr *parser.Call, nextOps []model.VectorOperator, 
 		return &histogramOperator{
 			pool:              model.NewVectorPool(stepsBatch),
 			funcArgs:          funcExpr.Args,
-			once:              sync.Once{},
 			scalarOp:          nextOps[0],
 			vectorOp:          nextOps[1],
 			scalarPoints:      make([]float64, stepsBatch),
@@ -178,12 +177,17 @@ func (o *functionOperator) Explain() (me string, next []model.VectorOperator) {
 	return fmt.Sprintf("[*functionOperator] %v(%v)", o.funcExpr.Func.Name, o.funcExpr.Args), o.nextOps
 }
 
-func (o *functionOperator) Series(ctx context.Context) ([]labels.Labels, error) {
-	if err := o.loadSeries(ctx); err != nil {
-		return nil, err
+func (o *functionOperator) Series(ctx context.Context) model.LabelsIterator {
+	if o.funcExpr.Func.Name == "vector" {
+		return model.NewLabelSliceIterator([]labels.Labels{labels.New()})
 	}
 
-	return o.series, nil
+	b := labels.ScratchBuilder{}
+	series := o.nextOps[o.vectorIndex].Series(ctx)
+	return model.NewProcessingIterator(series, func(l labels.Labels) labels.Labels {
+		lbls, _ := extlabels.DropMetricName(l, b)
+		return lbls
+	})
 }
 
 func (o *functionOperator) GetPool() *model.VectorPool {
@@ -197,9 +201,6 @@ func (o *functionOperator) Next(ctx context.Context) ([]model.StepVector, error)
 	default:
 	}
 
-	if err := o.loadSeries(ctx); err != nil {
-		return nil, err
-	}
 	start := time.Now()
 	// Process non-variadic single/multi-arg instant vector and scalar input functions.
 	// Call next on vector input.
@@ -263,29 +264,4 @@ func (o *functionOperator) Next(ctx context.Context) ([]model.StepVector, error)
 	o.AddExecutionTimeTaken(time.Since(start))
 
 	return vectors, nil
-}
-
-func (o *functionOperator) loadSeries(ctx context.Context) error {
-	var err error
-	o.once.Do(func() {
-		if o.funcExpr.Func.Name == "vector" {
-			o.series = []labels.Labels{labels.New()}
-			return
-		}
-
-		series, loadErr := o.nextOps[o.vectorIndex].Series(ctx)
-		if loadErr != nil {
-			err = loadErr
-			return
-		}
-		o.series = make([]labels.Labels, len(series))
-
-		b := labels.ScratchBuilder{}
-		for i, s := range series {
-			lbls, _ := extlabels.DropMetricName(s, b)
-			o.series[i] = lbls
-		}
-	})
-
-	return err
 }
