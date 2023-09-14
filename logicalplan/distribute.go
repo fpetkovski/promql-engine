@@ -48,8 +48,9 @@ func (lrs labelSetRanges) addRange(key string, tr timeRange) {
 // minOverlap returns the smallest overlap between all label set ranges.
 func (lrs labelSetRanges) minOverlap() time.Duration {
 	var minLabelsetOverlap time.Duration = math.MaxInt64
-	for _, lr := range lrs {
+	for key, lr := range lrs {
 		minRangeOverlap := lr.minOverlap()
+		fmt.Println(key, minRangeOverlap)
 		if minRangeOverlap < minLabelsetOverlap {
 			minLabelsetOverlap = minRangeOverlap
 		}
@@ -192,6 +193,7 @@ func (m DistributedExecutionOptimizer) Optimize(plan parser.Expr, opts *Opts) pa
 		return true
 	})
 
+	fmt.Println(plan)
 	return plan
 }
 
@@ -244,6 +246,8 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 		}
 	}
 
+	fmt.Println(startOffset, globalMinT)
+
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
 	for _, e := range engines {
 		if !matchesExternalLabelSet(*expr, e.LabelSets()) {
@@ -254,6 +258,8 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *parser.Expr, engine
 		if !keep {
 			continue
 		}
+
+		fmt.Println(start, e.MinT(), e.MaxT())
 
 		remoteQueries = append(remoteQueries, RemoteExecution{
 			Engine:          e,
