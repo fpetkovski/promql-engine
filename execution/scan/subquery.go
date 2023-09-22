@@ -11,7 +11,6 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/thanos-io/promql-engine/execution/model"
-	"github.com/thanos-io/promql-engine/execution/parse"
 	"github.com/thanos-io/promql-engine/extlabels"
 	"github.com/thanos-io/promql-engine/parser"
 	"github.com/thanos-io/promql-engine/query"
@@ -21,7 +20,7 @@ import (
 type subqueryOperator struct {
 	next        model.VectorOperator
 	pool        *model.VectorPool
-	call        functionCall
+	call        FunctionCall
 	mint        int64
 	maxt        int64
 	currentStep int64
@@ -30,13 +29,13 @@ type subqueryOperator struct {
 	subQuery *parser.SubqueryExpr
 
 	onceSeries sync.Once
-	acc        [][]sample
+	acc        [][]Sample
 }
 
 func NewSubqueryOperator(pool *model.VectorPool, next model.VectorOperator, opts *query.Options, funcExpr *parser.Call, subQuery *parser.SubqueryExpr) (model.VectorOperator, error) {
-	call, ok := rangeVectorFuncs[funcExpr.Func.Name]
-	if !ok {
-		return nil, parse.UnknownFunctionError(funcExpr.Func)
+	call, err := NewRangeVectorFunc(funcExpr.Func.Name)
+	if err != nil {
+		return nil, err
 	}
 	return &subqueryOperator{
 		next:        next,
@@ -77,7 +76,7 @@ ACC:
 		}
 		for _, vector := range vectors {
 			for j, s := range vector.Samples {
-				o.acc[vector.SampleIDs[j]] = append(o.acc[vector.SampleIDs[j]], sample{T: vector.T, F: s})
+				o.acc[vector.SampleIDs[j]] = append(o.acc[vector.SampleIDs[j]], Sample{T: vector.T, F: s})
 			}
 			o.next.GetPool().PutStepVector(vector)
 		}
@@ -87,7 +86,7 @@ ACC:
 	res := o.pool.GetVectorBatch()
 	sv := o.pool.GetStepVector(o.currentStep)
 	for sampleId, rangeSamples := range o.acc {
-		f, h, ok := o.call(functionArgs{
+		f, h, ok := o.call(FunctionArgs{
 			Samples:     rangeSamples,
 			StepTime:    o.currentStep,
 			SelectRange: o.subQuery.Range.Milliseconds(),
@@ -109,7 +108,7 @@ ACC:
 
 func (o *subqueryOperator) Series(ctx context.Context) model.LabelsIterator {
 	series := o.next.Series(ctx)
-	o.acc = make([][]sample, series.Size())
+	o.acc = make([][]Sample, series.Size())
 	var b labels.ScratchBuilder
 	return model.NewProcessingIterator(o.next.Series(ctx), func(l labels.Labels) labels.Labels {
 		if o.funcExpr.Func.Name != "last_over_time" {
