@@ -326,7 +326,7 @@ loop:
 			if t >= mint {
 				n := len(out)
 				if cap(out) > n {
-					out = out[:len(out)+1]
+					out = out[:n+1]
 				} else {
 					out = append(out, Sample{})
 				}
@@ -341,7 +341,7 @@ loop:
 			if t >= mint {
 				n := len(out)
 				if cap(out) > n {
-					out = out[:len(out)+1]
+					out = out[:n+1]
 				} else {
 					out = append(out, Sample{})
 				}
@@ -357,7 +357,7 @@ loop:
 		if t == maxt && !value.IsStaleNaN(fh.Sum) {
 			n := len(out)
 			if cap(out) > n {
-				out = out[:len(out)+1]
+				out = out[:n+1]
 			} else {
 				out = append(out, Sample{})
 			}
@@ -368,7 +368,7 @@ loop:
 		if t == maxt && !value.IsStaleNaN(v) {
 			n := len(out)
 			if cap(out) > n {
-				out = out[:len(out)+1]
+				out = out[:n+1]
 			} else {
 				out = append(out, Sample{})
 			}
