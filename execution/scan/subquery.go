@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/thanos-io/promql-engine/execution/model"
 	"github.com/thanos-io/promql-engine/extlabels"
 	"github.com/thanos-io/promql-engine/query"
+	"github.com/thanos-io/promql-engine/ringbuffer"
 )
 
 // TODO: only instant subqueries for now.
@@ -30,7 +32,8 @@ type subqueryOperator struct {
 
 	onceSeries sync.Once
 	series     []labels.Labels
-	acc        [][]Sample
+	floats     []*ringbuffer.RingBuffer[float64]
+	histograms []*ringbuffer.RingBuffer[*histogram.FloatHistogram]
 }
 
 func NewSubqueryOperator(pool *model.VectorPool, next model.VectorOperator, opts *query.Options, funcExpr *parser.Call, subQuery *parser.SubqueryExpr) (model.VectorOperator, error) {
@@ -80,10 +83,10 @@ ACC:
 		}
 		for _, vector := range vectors {
 			for j, s := range vector.Samples {
-				o.acc[vector.SampleIDs[j]] = append(o.acc[vector.SampleIDs[j]], Sample{T: vector.T, F: s})
+				o.floats[vector.SampleIDs[j]].Push(vector.T, s)
 			}
 			for j, s := range vector.Histograms {
-				o.acc[vector.HistogramIDs[j]] = append(o.acc[vector.HistogramIDs[j]], Sample{T: vector.T, H: s})
+				o.histograms[vector.HistogramIDs[j]].Push(vector.T, s)
 			}
 			o.next.GetPool().PutStepVector(vector)
 		}
@@ -92,9 +95,10 @@ ACC:
 
 	res := o.pool.GetVectorBatch()
 	sv := o.pool.GetStepVector(o.currentStep)
-	for sampleId, rangeSamples := range o.acc {
+	for sampleId := range o.floats {
 		f, h, ok := o.call(FunctionArgs{
-			Samples:     rangeSamples,
+			Floats:      o.floats[sampleId].Samples(),
+			Histograms:  o.histograms[sampleId].Samples(),
 			StepTime:    o.currentStep,
 			SelectRange: o.subQuery.Range.Milliseconds(),
 			Offset:      o.subQuery.Offset.Milliseconds(),
@@ -130,7 +134,12 @@ func (o *subqueryOperator) initSeries(ctx context.Context) error {
 		}
 
 		o.series = make([]labels.Labels, len(series))
-		o.acc = make([][]Sample, len(series))
+		o.floats = make([]*ringbuffer.RingBuffer[float64], len(series))
+		o.histograms = make([]*ringbuffer.RingBuffer[*histogram.FloatHistogram], len(series))
+		for i := range series {
+			o.floats[i] = ringbuffer.New[float64](0)
+			o.histograms[i] = ringbuffer.New[*histogram.FloatHistogram](0)
+		}
 		var b labels.ScratchBuilder
 		for i, s := range series {
 			lbls := s

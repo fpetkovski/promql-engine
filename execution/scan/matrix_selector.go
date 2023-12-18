@@ -9,6 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/prometheus/model/histogram"
+
+	"github.com/thanos-io/promql-engine/ringbuffer"
+
 	"github.com/efficientgo/core/errors"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/value"
@@ -23,10 +27,12 @@ import (
 )
 
 type matrixScanner struct {
-	labels           labels.Labels
-	signature        uint64
-	previousSamples  []Sample
-	samples          *storage.BufferedSeriesIterator
+	labels    labels.Labels
+	signature uint64
+
+	iterator         *storage.BufferedSeriesIterator
+	floats           *ringbuffer.RingBuffer[float64]
+	histograms       *ringbuffer.RingBuffer[*histogram.FloatHistogram]
 	metricAppearedTs *int64
 	deltaReduced     bool
 }
@@ -175,15 +181,12 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 			maxt := seriesTs - o.offset
 			mint := maxt - o.selectRange
 
-			var rangeSamples []Sample
 			var err error
-
 			if !o.isExtFunction {
-				rangeSamples, err = selectPoints(series.samples, mint, maxt, series.previousSamples)
+				err = series.selectPoints(mint, maxt)
 			} else {
-				rangeSamples, err = selectExtPoints(series.samples, mint, maxt, series.previousSamples, o.extLookbackDelta, &series.metricAppearedTs)
+				err = series.selectExtPoints(mint, maxt, o.extLookbackDelta)
 			}
-
 			if err != nil {
 				return nil, err
 			}
@@ -193,14 +196,14 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 			// under parser.Call by implementing new data model.
 			// https://github.com/thanos-io/promql-engine/issues/39
 			f, h, ok := o.call(FunctionArgs{
-				Samples:          rangeSamples,
+				Floats:           series.floats.Samples(),
+				Histograms:       series.histograms.Samples(),
 				StepTime:         seriesTs,
 				SelectRange:      o.selectRange,
 				Offset:           o.offset,
 				ScalarPoints:     o.scalarArgs,
 				MetricAppearedTs: series.metricAppearedTs,
 			})
-
 			if ok {
 				vectors[currStep].T = seriesTs
 				if h != nil {
@@ -210,15 +213,13 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 				}
 			}
 
-			series.previousSamples = rangeSamples
-
 			// Only buffer bufferRange milliseconds from the second step on.
 			bufferRange := o.selectRange
 			if bufferRange > o.step {
 				bufferRange = o.step
 			}
 			if !series.deltaReduced {
-				series.samples.ReduceDelta(bufferRange)
+				series.iterator.ReduceDelta(bufferRange)
 				series.deltaReduced = true
 			}
 
@@ -264,8 +265,10 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 			o.scanners[i] = matrixScanner{
 				labels:       lbls,
 				signature:    s.Signature,
-				samples:      storage.NewBufferIterator(s.Iterator(nil), selectRange),
+				iterator:     storage.NewBufferIterator(s.Iterator(nil), selectRange),
 				deltaReduced: o.isExtFunction,
+				floats:       ringbuffer.New[float64](0),
+				histograms:   ringbuffer.New[*histogram.FloatHistogram](0),
 			}
 			o.series[i] = lbls
 		}
@@ -287,32 +290,26 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 // into the [mint, maxt] range are retained; only points with later timestamps
 // are populated from the iterator.
 // TODO(fpetkovski): Add max samples limit.
-func selectPoints(it *storage.BufferedSeriesIterator, mint, maxt int64, out []Sample) ([]Sample, error) {
-	if len(out) > 0 && out[len(out)-1].T >= mint {
-		// There is an overlap between previous and current ranges, retain common
-		// points. In most such cases:
-		//   (a) the overlap is significantly larger than the eval step; and/or
-		//   (b) the number of samples is relatively small.
-		// so a linear search will be as fast as a binary search.
-		var drop int
-		for drop = 0; out[drop].T < mint; drop++ {
-		}
-		copy(out, out[drop:])
-		out = out[:len(out)-drop]
-		// Only append points with timestamps after the last timestamp we have.
-		mint = out[len(out)-1].T + 1
-	} else {
-		out = out[:0]
+func (s *matrixScanner) selectPoints(mint, maxt int64) error {
+	floatsMint, histogramsMint := mint, mint
+	s.floats.DropBefore(mint)
+	if samples := s.floats.Samples(); len(samples) > 0 {
+		floatsMint = samples[len(samples)-1].T + 1
 	}
 
-	soughtValueType := it.Seek(maxt)
+	s.histograms.DropBefore(mint)
+	if samples := s.histograms.Samples(); len(samples) > 0 {
+		histogramsMint = samples[len(samples)-1].T + 1
+	}
+
+	soughtValueType := s.iterator.Seek(maxt)
 	if soughtValueType == chunkenc.ValNone {
-		if it.Err() != nil {
-			return nil, it.Err()
+		if s.iterator.Err() != nil {
+			return s.iterator.Err()
 		}
 	}
 
-	buf := it.Buffer()
+	buf := s.iterator.Buffer()
 loop:
 	for {
 		switch buf.Next() {
@@ -323,14 +320,8 @@ loop:
 			if value.IsStaleNaN(fh.Sum) {
 				continue loop
 			}
-			if t >= mint {
-				n := len(out)
-				if cap(out) > n {
-					out = out[:len(out)+1]
-				} else {
-					out = append(out, Sample{})
-				}
-				out[n].T, out[n].H = t, fh
+			if t >= histogramsMint {
+				s.histograms.Push(t, fh)
 			}
 		case chunkenc.ValFloat:
 			t, v := buf.At()
@@ -338,14 +329,8 @@ loop:
 				continue loop
 			}
 			// Values in the buffer are guaranteed to be smaller than maxt.
-			if t >= mint {
-				n := len(out)
-				if cap(out) > n {
-					out = out[:len(out)+1]
-				} else {
-					out = append(out, Sample{})
-				}
-				out[n].T, out[n].F, out[n].H = t, v, nil
+			if t >= floatsMint {
+				s.floats.Push(t, v)
 			}
 		}
 	}
@@ -353,30 +338,18 @@ loop:
 	// The sought sample might also be in the range.
 	switch soughtValueType {
 	case chunkenc.ValHistogram, chunkenc.ValFloatHistogram:
-		t, fh := it.AtFloatHistogram()
+		t, fh := s.iterator.AtFloatHistogram()
 		if t == maxt && !value.IsStaleNaN(fh.Sum) {
-			n := len(out)
-			if cap(out) > n {
-				out = out[:len(out)+1]
-			} else {
-				out = append(out, Sample{})
-			}
-			out[n].T, out[n].H = t, fh
+			s.histograms.Push(t, fh)
 		}
 	case chunkenc.ValFloat:
-		t, v := it.At()
+		t, v := s.iterator.At()
 		if t == maxt && !value.IsStaleNaN(v) {
-			n := len(out)
-			if cap(out) > n {
-				out = out[:len(out)+1]
-			} else {
-				out = append(out, Sample{})
-			}
-			out[n].T, out[n].F, out[n].H = t, v, nil
+			s.floats.Push(t, v)
 		}
 	}
 
-	return out, nil
+	return nil
 }
 
 // matrixIterSlice populates a matrix vector covering the requested range for a
@@ -388,11 +361,10 @@ loop:
 // into the [mint, maxt] range are retained; only points with later timestamps
 // are populated from the iterator.
 // TODO(fpetkovski): Add max samples limit.
-func selectExtPoints(it *storage.BufferedSeriesIterator, mint, maxt int64, out []Sample, extLookbackDelta int64, metricAppearedTs **int64) ([]Sample, error) {
+func (s *matrixScanner) selectExtPoints(mint, maxt int64, extLookbackDelta int64) error {
 	extMint := mint - extLookbackDelta
-	selectsNativeHistograms := false
 
-	if len(out) > 0 && out[len(out)-1].T >= mint {
+	if floats := s.floats.Samples(); len(floats) > 0 {
 		// There is an overlap between previous and current ranges, retain common
 		// points. In most such cases:
 		//   (a) the overlap is significantly larger than the eval step; and/or
@@ -401,96 +373,87 @@ func selectExtPoints(it *storage.BufferedSeriesIterator, mint, maxt int64, out [
 		var drop int
 
 		// This is an argument to an extended range function, first go past mint.
-		for drop = 0; drop < len(out) && out[drop].T <= mint; drop++ {
-
+		for drop = 0; drop < len(floats) && floats[drop].T <= mint; drop++ {
 		}
 		// Then, go back one sample if within lookbackDelta of mint.
-		if drop > 0 && out[drop-1].T >= extMint {
+		if drop > 0 && floats[drop-1].T >= extMint {
 			drop--
 		}
-		if out[len(out)-1].T >= mint {
+		if floats[len(floats)-1].T >= mint {
 			// Only append points with timestamps after the last timestamp we have.
-			mint = out[len(out)-1].T + 1
+			mint = floats[len(floats)-1].T + 1
 		}
-
-		copy(out, out[drop:])
-		out = out[:len(out)-drop]
-	} else {
-		out = out[:0]
+		s.floats.DropBefore(floats[drop].T)
 	}
 
-	soughtValueType := it.Seek(maxt)
+	soughtValueType := s.iterator.Seek(maxt)
 	if soughtValueType == chunkenc.ValNone {
-		if it.Err() != nil {
-			return nil, it.Err()
+		if s.iterator.Err() != nil {
+			return s.iterator.Err()
 		}
 	}
 
-	appendedPointBeforeMint := len(out) > 0
-	buf := it.Buffer()
+	appendedPointBeforeMint := len(s.floats.Samples()) > 0
+	buf := s.iterator.Buffer()
 loop:
 	for {
 		switch buf.Next() {
 		case chunkenc.ValNone:
 			break loop
 		case chunkenc.ValHistogram, chunkenc.ValFloatHistogram:
-			selectsNativeHistograms = true
 			t, fh := buf.AtFloatHistogram()
 			if value.IsStaleNaN(fh.Sum) {
 				continue loop
 			}
-			if *metricAppearedTs == nil {
-				*metricAppearedTs = &t
+			if s.metricAppearedTs == nil {
+				s.metricAppearedTs = &t
 			}
 			if t >= mint {
-				out = append(out, Sample{T: t, H: fh})
+				s.histograms.Push(t, fh)
 			}
 		case chunkenc.ValFloat:
 			t, v := buf.At()
 			if value.IsStaleNaN(v) {
 				continue loop
 			}
-			if *metricAppearedTs == nil {
-				*metricAppearedTs = &t
+			if s.metricAppearedTs == nil {
+				s.metricAppearedTs = &t
 			}
-
 			// This is the argument to an extended range function: if any point
 			// exists at or before range start, add it and then keep replacing
 			// it with later points while not yet (strictly) inside the range.
 			if t >= mint || !appendedPointBeforeMint {
-				out = append(out, Sample{T: t, F: v})
+				s.floats.Push(t, v)
 				appendedPointBeforeMint = true
 			} else {
-				out[len(out)-1] = Sample{T: t, F: v}
+				s.floats.ReadIntoLast(func(s *ringbuffer.Sample[float64]) {
+					s.T, s.V = t, v
+				})
 			}
-
 		}
 	}
 
 	// The sought sample might also be in the range.
 	switch soughtValueType {
 	case chunkenc.ValHistogram, chunkenc.ValFloatHistogram:
-		selectsNativeHistograms = true
-		t, fh := it.AtFloatHistogram()
+		t, fh := s.iterator.AtFloatHistogram()
 		if t == maxt && !value.IsStaleNaN(fh.Sum) {
-			if *metricAppearedTs == nil {
-				*metricAppearedTs = &t
+			if s.metricAppearedTs == nil {
+				s.metricAppearedTs = &t
 			}
-			out = append(out, Sample{T: t, H: fh})
+			s.histograms.Push(t, fh)
 		}
 	case chunkenc.ValFloat:
-		t, v := it.At()
+		t, v := s.iterator.At()
 		if t == maxt && !value.IsStaleNaN(v) {
-			if *metricAppearedTs == nil {
-				*metricAppearedTs = &t
+			if s.metricAppearedTs == nil {
+				s.metricAppearedTs = &t
 			}
-			out = append(out, Sample{T: t, F: v})
+			s.floats.Push(t, v)
 		}
 	}
-
-	if selectsNativeHistograms {
-		return nil, ErrNativeHistogramsNotSupported
+	if len(s.histograms.Samples()) > 0 {
+		return ErrNativeHistogramsNotSupported
 	}
-
-	return out, nil
+	return nil
 }
