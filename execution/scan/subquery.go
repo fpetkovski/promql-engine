@@ -29,7 +29,10 @@ type subqueryOperator struct {
 	maxt        int64
 	currentStep int64
 	step        int64
+<<<<<<< HEAD
 	stepsBatch  int
+=======
+>>>>>>> 3d756d4 (Add suport for range subqueries)
 
 	funcExpr *parser.Call
 	subQuery *parser.SubqueryExpr
@@ -62,8 +65,12 @@ func NewSubqueryOperator(pool *model.VectorPool, next model.VectorOperator, opts
 		mint:          opts.Start.UnixMilli(),
 		maxt:          opts.End.UnixMilli(),
 		currentStep:   opts.Start.UnixMilli(),
+<<<<<<< HEAD
 		step:          step,
 		stepsBatch:    opts.StepsBatch,
+=======
+		step:          opts.Step.Milliseconds(),
+>>>>>>> 3d756d4 (Add suport for range subqueries)
 		lastCollected: -1,
 	}, nil
 }
@@ -89,6 +96,7 @@ func (o *subqueryOperator) Next(ctx context.Context) ([]model.StepVector, error)
 		return nil, err
 	}
 
+<<<<<<< HEAD
 	res := o.pool.GetVectorBatch()
 	for i := 0; o.currentStep <= o.maxt && i < o.stepsBatch; i++ {
 		mint := o.currentStep - o.subQuery.Range.Milliseconds() - o.subQuery.OriginalOffset.Milliseconds()
@@ -108,9 +116,65 @@ func (o *subqueryOperator) Next(ctx context.Context) ([]model.StepVector, error)
 				o.next.GetPool().PutVectors(o.lastVectors)
 				o.lastVectors = nil
 				o.lastCollected = -1
+=======
+	mint := o.currentStep - o.subQuery.Range.Milliseconds()
+	for _, b := range o.buffers {
+		b.DropBefore(mint)
+	}
+	if len(o.lastVectors) > 0 {
+		for _, v := range o.lastVectors[o.lastCollected+1:] {
+			if v.T > o.currentStep {
+				break
+			}
+			o.collect(v)
+			o.lastCollected++
+		}
+		if o.lastCollected == len(o.lastVectors)-1 {
+			o.next.GetPool().PutVectors(o.lastVectors)
+			o.lastVectors = nil
+			o.lastCollected = -1
+		}
+	}
+
+ACC:
+	for len(o.lastVectors) == 0 {
+		vectors, err := o.next.Next(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(vectors) == 0 {
+			break ACC
+		}
+		for i, vector := range vectors {
+			if vector.T > o.currentStep {
+				o.lastVectors = vectors
+				break ACC
+			}
+			o.collect(vector)
+			o.lastCollected = i
+		}
+		o.next.GetPool().PutVectors(vectors)
+	}
+
+	res := o.pool.GetVectorBatch()
+	sv := o.pool.GetStepVector(o.currentStep)
+	for sampleId, rangeSamples := range o.buffers {
+		f, h, ok := o.call(FunctionArgs{
+			Samples:     rangeSamples.Samples(),
+			StepTime:    o.currentStep,
+			SelectRange: o.subQuery.Range.Milliseconds(),
+			Offset:      o.subQuery.Offset.Milliseconds(),
+		})
+		if ok {
+			if h != nil {
+				sv.AppendHistogram(o.pool, uint64(sampleId), h)
+			} else {
+				sv.AppendSample(o.pool, uint64(sampleId), f)
+>>>>>>> 3d756d4 (Add suport for range subqueries)
 			}
 		}
 
+<<<<<<< HEAD
 	ACC:
 		for len(o.lastVectors) == 0 {
 			vectors, err := o.next.Next(ctx)
@@ -158,6 +222,13 @@ func (o *subqueryOperator) collect(v model.StepVector, mint int64) {
 		o.next.GetPool().PutStepVector(v)
 		return
 	}
+=======
+	o.currentStep += o.step
+	return res, nil
+}
+
+func (o *subqueryOperator) collect(v model.StepVector) {
+>>>>>>> 3d756d4 (Add suport for range subqueries)
 	for i, s := range v.Samples {
 		buffer := o.buffers[v.SampleIDs[i]]
 		if buffer.Len() > 0 && v.T <= buffer.MaxT() {
@@ -166,7 +237,11 @@ func (o *subqueryOperator) collect(v model.StepVector, mint int64) {
 		buffer.Push(v.T, Value{F: s})
 	}
 	for i, s := range v.Histograms {
+<<<<<<< HEAD
 		buffer := o.buffers[v.HistogramIDs[i]]
+=======
+		buffer := o.buffers[v.SampleIDs[i]]
+>>>>>>> 3d756d4 (Add suport for range subqueries)
 		if buffer.Len() > 0 && v.T < buffer.MaxT() {
 			continue
 		}
