@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/efficientgo/core/errors"
+
+	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/storage"
@@ -329,7 +331,7 @@ loop:
 				if cap(out) > n {
 					out = out[:len(out)+1]
 				} else {
-					out = append(out, Sample{})
+					out = append(out, Sample{H: &histogram.FloatHistogram{}})
 				}
 				out[n].T, out[n].H = buf.AtFloatHistogram(out[n].H)
 				if value.IsStaleNaN(out[n].H.Sum) {
@@ -362,15 +364,15 @@ loop:
 		if t != maxt {
 			break
 		}
-		_, fh := it.AtFloatHistogram()
-		if !value.IsStaleNaN(fh.Sum) {
-			n := len(out)
-			if cap(out) > n {
-				out = out[:len(out)+1]
-			} else {
-				out = append(out, Sample{})
-			}
-			out[n].T, out[n].H = t, fh.Copy()
+		n := len(out)
+		if cap(out) > n {
+			out = out[:len(out)+1]
+		} else {
+			out = append(out, Sample{H: &histogram.FloatHistogram{}})
+		}
+		out[n].T, out[n].H = it.AtFloatHistogram(out[n].H)
+		if value.IsStaleNaN(out[n].H.Sum) {
+			out = out[:n]
 		}
 	case chunkenc.ValFloat:
 		t, v := it.At()
@@ -487,7 +489,7 @@ loop:
 	switch soughtValueType {
 	case chunkenc.ValHistogram, chunkenc.ValFloatHistogram:
 		selectsNativeHistograms = true
-		t, fh := it.AtFloatHistogram()
+		t, fh := it.AtFloatHistogram(nil)
 		if t == maxt && !value.IsStaleNaN(fh.Sum) {
 			if *metricAppearedTs == nil {
 				*metricAppearedTs = &t

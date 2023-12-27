@@ -4403,9 +4403,13 @@ func (m *mockIterator) At() (int64, float64) {
 	return m.timestamps[m.i], m.values[m.i]
 }
 
-func (m *mockIterator) AtHistogram() (int64, *histogram.Histogram) { return 0, nil }
+func (m *mockIterator) AtHistogram(_ *histogram.Histogram) (int64, *histogram.Histogram) {
+	return 0, nil
+}
 
-func (m *mockIterator) AtFloatHistogram() (int64, *histogram.FloatHistogram) { return 0, nil }
+func (m *mockIterator) AtFloatHistogram(_ *histogram.FloatHistogram) (int64, *histogram.FloatHistogram) {
+	return 0, nil
+}
 
 func (m *mockIterator) AtT() int64 { return m.timestamps[m.i] }
 
@@ -4445,11 +4449,11 @@ type slowIterator struct {
 	ts int64
 }
 
-func (d *slowIterator) AtHistogram() (int64, *histogram.Histogram) {
+func (d *slowIterator) AtHistogram(_ *histogram.Histogram) (int64, *histogram.Histogram) {
 	panic("not implemented")
 }
 
-func (d *slowIterator) AtFloatHistogram() (int64, *histogram.FloatHistogram) {
+func (d *slowIterator) AtFloatHistogram(_ *histogram.FloatHistogram) (int64, *histogram.FloatHistogram) {
 	panic("not implemented")
 }
 
@@ -4553,7 +4557,10 @@ func TestNativeHistograms(t *testing.T) {
 			name:  "rate()",
 			query: "rate(native_histogram_series[1m])",
 		},
-
+		{
+			name:  "rate() with long range",
+			query: "rate(native_histogram_series[20m])",
+		},
 		{
 			name:  "increase()",
 			query: "increase(native_histogram_series[1m])",
@@ -4697,12 +4704,12 @@ func testNativeHistograms(t *testing.T, cases []histogramTestCase, opts promql.E
 							t.Skip()
 						}
 						ctx := context.Background()
-						q1, err := thanosEngine.NewRangeQuery(ctx, storage, nil, tc.query, time.Unix(50, 0), time.Unix(600, 0), 30*time.Second)
+						q1, err := thanosEngine.NewRangeQuery(ctx, storage, nil, tc.query, time.Unix(50, 0), time.Unix(80, 0), 30*time.Second)
 						testutil.Ok(t, err)
 						newResult := q1.Exec(ctx)
 						testutil.Ok(t, newResult.Err)
 
-						q2, err := promEngine.NewRangeQuery(ctx, storage, nil, tc.query, time.Unix(50, 0), time.Unix(600, 0), 30*time.Second)
+						q2, err := promEngine.NewRangeQuery(ctx, storage, nil, tc.query, time.Unix(50, 0), time.Unix(80, 0), 30*time.Second)
 						testutil.Ok(t, err)
 						promResult := q2.Exec(ctx)
 						testutil.Ok(t, promResult.Err)
