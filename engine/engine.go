@@ -26,6 +26,7 @@ import (
 	"github.com/thanos-io/promql-engine/execution/function"
 	"github.com/thanos-io/promql-engine/execution/model"
 	"github.com/thanos-io/promql-engine/execution/parse"
+	"github.com/thanos-io/promql-engine/execution/scan"
 	"github.com/thanos-io/promql-engine/execution/warnings"
 	"github.com/thanos-io/promql-engine/extlabels"
 	"github.com/thanos-io/promql-engine/logicalplan"
@@ -88,6 +89,10 @@ func (o Opts) getLogicalOptimizers() []logicalplan.Optimizer {
 }
 
 func New(opts Opts) *compatibilityEngine {
+	return NewWithScanners(opts, nil)
+}
+
+func NewWithScanners(opts Opts, scanners logicalplan.Scanners) *compatibilityEngine {
 	if opts.Logger == nil {
 		opts.Logger = log.NewNopLogger()
 	}
@@ -145,6 +150,7 @@ func New(opts Opts) *compatibilityEngine {
 	return &compatibilityEngine{
 		prom:      engine,
 		functions: functions,
+		scanners:  scanners,
 
 		disableFallback:   opts.DisableFallback,
 		logger:            opts.Logger,
@@ -163,6 +169,7 @@ func New(opts Opts) *compatibilityEngine {
 type compatibilityEngine struct {
 	prom      v1.QueryEngine
 	functions map[string]*parser.Function
+	scanners  logicalplan.Scanners
 
 	disableFallback   bool
 	logger            log.Logger
@@ -210,8 +217,13 @@ func (e *compatibilityEngine) NewInstantQuery(ctx context.Context, q storage.Que
 		NoStepSubqueryIntervalFn: e.noStepSubqueryIntervalFn,
 	}
 
+	scanners := e.scanners
+	if scanners == nil {
+		scanners = scan.NewPrometheusScanners(q)
+	}
+
 	lplan, warns := logicalplan.New(expr, qOpts).Optimize(e.logicalOptimizers)
-	exec, err := execution.New(lplan.Expr(), q, qOpts)
+	exec, err := execution.New(lplan.Expr(), scanners, qOpts)
 	if e.triggerFallback(err) {
 		e.metrics.queries.WithLabelValues("true").Inc()
 		return e.prom.NewInstantQuery(ctx, q, opts, qs, ts)
@@ -262,8 +274,13 @@ func (e *compatibilityEngine) NewRangeQuery(ctx context.Context, q storage.Query
 		NoStepSubqueryIntervalFn: e.noStepSubqueryIntervalFn,
 	}
 
+	scanners := e.scanners
+	if scanners == nil {
+		scanners = scan.NewPrometheusScanners(q)
+	}
+
 	lplan, warns := logicalplan.New(expr, qOpts).Optimize(e.logicalOptimizers)
-	exec, err := execution.New(lplan.Expr(), q, qOpts)
+	exec, err := execution.New(lplan.Expr(), scanners, qOpts)
 	if e.triggerFallback(err) {
 		e.metrics.queries.WithLabelValues("true").Inc()
 		return e.prom.NewRangeQuery(ctx, q, opts, qs, start, end, step)
