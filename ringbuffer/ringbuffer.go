@@ -44,6 +44,10 @@ func (r *RingBuffer[T]) ReadIntoNext(f func(*Sample[T])) {
 	f(&r.items[n])
 }
 
+func (r *RingBuffer[T]) ReadIntoLast(f func(*Sample[T])) {
+	f(&r.items[len(r.items)-1])
+}
+
 func (r *RingBuffer[T]) Push(t int64, v T) {
 	if n := len(r.items); n < cap(r.items) {
 		r.items = r.items[:n+1]
@@ -61,6 +65,26 @@ func (r *RingBuffer[T]) DropBefore(ts int64) {
 	}
 	var drop int
 	for drop = 0; drop < len(r.items) && r.items[drop].T < ts; drop++ {
+	}
+	keep := len(r.items) - drop
+
+	r.tail = resize(r.tail, drop)
+	copy(r.tail, r.items[:drop])
+	copy(r.items, r.items[drop:])
+	copy(r.items[keep:], r.tail)
+	r.items = r.items[:keep]
+}
+
+func (r *RingBuffer[T]) DropBeforeWithExtLookback(ts int64, extMint int64) {
+	if len(r.items) == 0 || r.items[len(r.items)-1].T < ts {
+		r.items = r.items[:0]
+		return
+	}
+	var drop int
+	for drop = 0; drop < len(r.items) && r.items[drop].T < ts; drop++ {
+	}
+	if drop > 0 && r.items[drop-1].T >= extMint {
+		drop--
 	}
 	keep := len(r.items) - drop
 

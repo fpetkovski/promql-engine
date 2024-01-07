@@ -135,41 +135,41 @@ func BenchmarkRangeQuery(b *testing.B) {
 		query   string
 		storage *teststorage.TestStorage
 	}{
-		//{
-		//	name:    "vector selector",
-		//	query:   "http_requests_total",
-		//	storage: sixHourDataset,
-		//},
-		//{
-		//	name:    "sum",
-		//	query:   "sum(http_requests_total)",
-		//	storage: sixHourDataset,
-		//},
-		//{
-		//	name:    "sum by pod",
-		//	query:   "sum by (pod) (http_requests_total)",
-		//	storage: sixHourDataset,
-		//},
-		//{
-		//	name:    "topk",
-		//	query:   "topk(2,http_requests_total)",
-		//	storage: sixHourDataset,
-		//},
-		//{
-		//	name:    "bottomk",
-		//	query:   "bottomk(2,http_requests_total)",
-		//	storage: sixHourDataset,
-		//},
+		{
+			name:    "vector selector",
+			query:   "http_requests_total",
+			storage: sixHourDataset,
+		},
+		{
+			name:    "sum",
+			query:   "sum(http_requests_total)",
+			storage: sixHourDataset,
+		},
+		{
+			name:    "sum by pod",
+			query:   "sum by (pod) (http_requests_total)",
+			storage: sixHourDataset,
+		},
+		{
+			name:    "topk",
+			query:   "topk(2,http_requests_total)",
+			storage: sixHourDataset,
+		},
+		{
+			name:    "bottomk",
+			query:   "bottomk(2,http_requests_total)",
+			storage: sixHourDataset,
+		},
 		{
 			name:    "rate",
 			query:   "rate(http_requests_total[1m])",
 			storage: sixHourDataset,
 		},
-		//{
-		//	name:    "subquery",
-		//	query:   "sum_over_time(rate(http_requests_total[1m])[10m:1m])",
-		//	storage: sixHourDataset,
-		//},
+		{
+			name:    "subquery",
+			query:   "sum_over_time(rate(http_requests_total[1m])[10m:1m])",
+			storage: sixHourDataset,
+		},
 		/*
 			{
 				name:    "rate with large range selection",
