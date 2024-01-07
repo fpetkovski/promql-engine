@@ -6,6 +6,7 @@ package scan
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -29,7 +30,7 @@ type matrixScanner struct {
 
 	buffer           *ringbuffer.RingBuffer[Value]
 	iterator         chunkenc.Iterator
-	lastSample       *ringbuffer.Sample[Value]
+	lastSample       ringbuffer.Sample[Value]
 	metricAppearedTs *int64
 }
 
@@ -247,10 +248,11 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 			}
 
 			o.scanners[i] = matrixScanner{
-				labels:    lbls,
-				signature: s.Signature,
-				iterator:  s.Iterator(nil),
-				buffer:    ringbuffer.New[Value](8),
+				labels:     lbls,
+				signature:  s.Signature,
+				iterator:   s.Iterator(nil),
+				lastSample: ringbuffer.Sample[Value]{T: math.MinInt64},
+				buffer:     ringbuffer.New[Value](8),
 			}
 			o.series[i] = lbls
 		}
@@ -274,23 +276,15 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 // TODO(fpetkovski): Add max samples limit.
 func (m *matrixScanner) selectPoints(mint, maxt int64) error {
 	m.buffer.DropBefore(mint)
-	if m.lastSample != nil && m.lastSample.T > maxt {
+	if m.lastSample.T > maxt {
 		return nil
 	}
 
-	if m.buffer.Len() > 0 {
+	mint = m.buffer.MaxT() + 1
+	if m.lastSample.T >= mint {
+		m.buffer.Push(m.lastSample.T, Value{F: m.lastSample.V.F, H: m.lastSample.V.H})
+		m.lastSample.T = math.MinInt64
 		mint = m.buffer.MaxT() + 1
-	}
-	if m.lastSample != nil && m.lastSample.T >= mint {
-		if h := m.lastSample.V.H; h != nil {
-			m.buffer.Push(m.lastSample.T, Value{H: h})
-		} else {
-			m.buffer.Push(m.lastSample.T, Value{F: m.lastSample.V.F})
-		}
-		m.lastSample = nil
-		if m.buffer.Len() > 0 {
-			mint = m.buffer.MaxT() + 1
-		}
 	}
 
 	for valType := m.iterator.Next(); valType != chunkenc.ValNone; valType = m.iterator.Next() {
@@ -301,7 +295,7 @@ func (m *matrixScanner) selectPoints(mint, maxt int64) error {
 				continue
 			}
 			if t > maxt {
-				m.lastSample = &ringbuffer.Sample[Value]{T: t, V: Value{H: h}}
+				m.lastSample.T, m.lastSample.V.H = t, h
 				return nil
 			}
 			if t >= mint {
@@ -313,7 +307,7 @@ func (m *matrixScanner) selectPoints(mint, maxt int64) error {
 				continue
 			}
 			if t > maxt {
-				m.lastSample = &ringbuffer.Sample[Value]{T: t, V: Value{F: v}}
+				m.lastSample.T, m.lastSample.V.F, m.lastSample.V.H = t, v, nil
 				return nil
 			}
 			if t >= mint {

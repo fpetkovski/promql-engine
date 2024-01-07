@@ -3,6 +3,8 @@
 
 package ringbuffer
 
+import "math"
+
 type Sample[T any] struct {
 	T int64
 	V T
@@ -23,7 +25,12 @@ func (r *RingBuffer[T]) Len() int {
 	return len(r.items)
 }
 
+// MaxT returns the maximum timestamp of the ring buffer.
+// If the ring buffer is empty, it returns math.MinInt64.
 func (r *RingBuffer[T]) MaxT() int64 {
+	if len(r.items) == 0 {
+		return math.MinInt64
+	}
 	return r.items[len(r.items)-1].T
 }
 
