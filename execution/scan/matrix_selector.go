@@ -338,7 +338,7 @@ loop:
 				} else {
 					out = append(out, ringbuffer.Sample[Value]{})
 				}
-				out[n].T, out[n].V.H = buf.AtFloatHistogram(out[n].V.H)
+				out[n].T, out[n].V.H = buf.AtFloatHistogram(nil)
 				if value.IsStaleNaN(out[n].V.H.Sum) {
 					out = out[:n]
 					continue loop
