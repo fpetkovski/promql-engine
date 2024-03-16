@@ -11,6 +11,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/thanos-io/promql-engine/execution/model"
+	"github.com/thanos-io/promql-engine/execution/warnings"
 	"github.com/thanos-io/promql-engine/extlabels"
 	"github.com/thanos-io/promql-engine/query"
 )
@@ -22,15 +23,17 @@ type duplicateLabelCheckOperator struct {
 
 	once sync.Once
 	next model.VectorOperator
+	warn bool
 
 	p []pair
 	c []uint64
 }
 
-func NewDuplicateLabelCheck(next model.VectorOperator, opts *query.Options) model.VectorOperator {
+func NewDuplicateLabelCheck(next model.VectorOperator, warn bool, opts *query.Options) model.VectorOperator {
 	return &duplicateLabelCheckOperator{
 		OperatorTelemetry: model.NewTelemetry("[duplicateLabelCheck]", opts.EnableAnalysis),
 		next:              next,
+		warn:              warn,
 	}
 }
 
@@ -71,7 +74,13 @@ func (d *duplicateLabelCheckOperator) Next(ctx context.Context) ([]model.StepVec
 			}
 		}
 		for i := range d.p {
-			if d.c[d.p[i].a]&d.c[d.p[i].b] > 0 {
+			if d.c[d.p[i].a]&d.c[d.p[i].b] == 0 {
+				continue
+			}
+			if d.warn {
+				annos := warnings.FromContext(ctx)
+				annos.Add(extlabels.ErrDuplicateLabelSet)
+			} else {
 				return nil, extlabels.ErrDuplicateLabelSet
 			}
 		}

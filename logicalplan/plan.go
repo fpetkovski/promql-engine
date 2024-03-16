@@ -45,7 +45,7 @@ type plan struct {
 }
 
 type PlanOptions struct {
-	DisableDuplicateLabelCheck bool
+	DuplicatesAsWarnings bool
 }
 
 func New(expr parser.Expr, queryOpts *query.Options, planOpts PlanOptions) Plan {
@@ -76,9 +76,7 @@ func (p *plan) Optimize(optimizers []Optimizer) (Plan, annotations.Annotations) 
 	// parens are just annoying and getting rid of them doesn't change the query
 	expr := trimParens(p.expr)
 
-	if !p.planOpts.DisableDuplicateLabelCheck {
-		expr = insertDuplicateLabelChecks(expr)
-	}
+	expr = insertDuplicateLabelChecks(expr, p.planOpts.DuplicatesAsWarnings)
 
 	return &plan{expr: expr, opts: p.opts}, *annos
 }
@@ -282,14 +280,14 @@ func trimParens(expr parser.Expr) parser.Expr {
 	return expr
 }
 
-func insertDuplicateLabelChecks(expr parser.Expr) parser.Expr {
+func insertDuplicateLabelChecks(expr parser.Expr, warn bool) parser.Expr {
 	Traverse(&expr, func(node *parser.Expr) {
 		switch t := (*node).(type) {
 		case *parser.AggregateExpr, *parser.UnaryExpr, *parser.BinaryExpr, *parser.Call:
-			*node = CheckDuplicateLabels{Expr: t}
+			*node = CheckDuplicateLabels{Expr: t, DuplicatesAsWarnings: warn}
 		case *VectorSelector:
 			if t.SelectTimestamp {
-				*node = CheckDuplicateLabels{Expr: t}
+				*node = CheckDuplicateLabels{Expr: t, DuplicatesAsWarnings: warn}
 			}
 		}
 	})
@@ -549,7 +547,8 @@ func (f MatrixSelector) Type() parser.ValueType { return parser.ValueTypeVector 
 func (f MatrixSelector) PromQLExpr() {}
 
 type CheckDuplicateLabels struct {
-	Expr parser.Expr
+	Expr                 parser.Expr
+	DuplicatesAsWarnings bool
 }
 
 func (c CheckDuplicateLabels) String() string {

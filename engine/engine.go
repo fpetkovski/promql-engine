@@ -80,7 +80,7 @@ type Opts struct {
 	// The Prometheus engine has internal check for duplicate labels produced by functions, aggregations or binary operators.
 	// This check can produce false positives when querying time-series data which does not conform to the Prometheus data model,
 	// and can be disabled if it leads to false positives.
-	DisableDuplicateLabelChecks bool
+	DuplicateSeriesAsWarnings bool
 }
 
 func (o Opts) getLogicalOptimizers() []logicalplan.Optimizer {
@@ -166,8 +166,8 @@ func NewWithScanners(opts Opts, scanners engstorage.Scanners) *compatibilityEngi
 		functions: functions,
 		scanners:  scanners,
 
-		disableDuplicateLabelChecks: opts.DisableDuplicateLabelChecks,
-		disableFallback:             opts.DisableFallback,
+		duplicatesAsWarnings: opts.DuplicateSeriesAsWarnings,
+		disableFallback:      opts.DisableFallback,
 
 		logger:            opts.Logger,
 		lookbackDelta:     opts.LookbackDelta,
@@ -194,8 +194,8 @@ type compatibilityEngine struct {
 	functions map[string]*parser.Function
 	scanners  engstorage.Scanners
 
-	disableDuplicateLabelChecks bool
-	disableFallback             bool
+	duplicatesAsWarnings bool
+	disableFallback      bool
 
 	logger            log.Logger
 	lookbackDelta     time.Duration
@@ -246,7 +246,7 @@ func (e *compatibilityEngine) NewInstantQuery(ctx context.Context, q storage.Que
 	}
 
 	planOpts := logicalplan.PlanOptions{
-		DisableDuplicateLabelCheck: e.disableDuplicateLabelChecks,
+		DuplicatesAsWarnings: e.duplicatesAsWarnings,
 	}
 	lplan, warns := logicalplan.New(expr, qOpts, planOpts).Optimize(e.logicalOptimizers)
 	exec, err := execution.New(lplan.Expr(), e.storageScanners(q), qOpts)
@@ -304,7 +304,7 @@ func (e *compatibilityEngine) NewRangeQuery(ctx context.Context, q storage.Query
 	}
 
 	planOpts := logicalplan.PlanOptions{
-		DisableDuplicateLabelCheck: e.disableDuplicateLabelChecks,
+		DuplicatesAsWarnings: e.duplicatesAsWarnings,
 	}
 	lplan, warns := logicalplan.New(expr, qOpts, planOpts).Optimize(e.logicalOptimizers)
 	exec, err := execution.New(lplan.Expr(), e.storageScanners(q), qOpts)

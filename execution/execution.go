@@ -380,7 +380,7 @@ func newDuplicateLabelCheck(e logicalplan.CheckDuplicateLabels, storage storage.
 	if err != nil {
 		return nil, err
 	}
-	return exchange.NewDuplicateLabelCheck(op, opts), nil
+	return exchange.NewDuplicateLabelCheck(op, e.DuplicatesAsWarnings, opts), nil
 }
 
 // Copy from https://github.com/prometheus/prometheus/blob/v2.39.1/promql/engine.go#L791.
