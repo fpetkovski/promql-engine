@@ -200,7 +200,7 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 				vectors[currStep].T = seriesTs
 				if h != nil {
 					vectors[currStep].AppendHistogram(o.vectorPool, scanner.signature, h)
-				} else if f != nil {
+				} else {
 					if o.functionName == "rate" || o.functionName == "increase" {
 						if len(o.inputSeries) > 0 {
 							metricName := o.inputSeries[0].Labels().Get(labels.MetricName)
@@ -214,7 +214,7 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 						}
 					}
 
-					vectors[currStep].AppendSample(o.vectorPool, scanner.signature, *f)
+					vectors[currStep].AppendSample(o.vectorPool, scanner.signature, f)
 				}
 			}
 			o.IncrementSamplesAtTimestamp(scanner.buffer.Len(), seriesTs)
