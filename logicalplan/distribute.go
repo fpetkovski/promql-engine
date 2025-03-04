@@ -226,6 +226,11 @@ func (m DistributedExecutionOptimizer) Optimize(plan Node, opts *query.Options) 
 		// If the current node is an aggregation, distribute the operation and
 		// stop the traversal.
 		if aggr, ok := (*current).(*Aggregation); ok {
+			aggregatesExternalLabel := removesExternalLabel(aggr, engineLabels)
+			if !aggregatesExternalLabel && isDistributive(parent, m.SkipBinaryPushdown, engineLabels, warns) {
+				return false
+			}
+
 			localAggregation := aggr.Op
 			if aggr.Op == parser.COUNT {
 				localAggregation = parser.SUM
@@ -256,6 +261,24 @@ func (m DistributedExecutionOptimizer) Optimize(plan Node, opts *query.Options) 
 		return true
 	})
 	return plan, *warns
+}
+
+func removesExternalLabel(aggr *Aggregation, engineLabels map[string]struct{}) bool {
+	if aggr.Without {
+		for _, lbl := range aggr.Grouping {
+			if _, ok := engineLabels[lbl]; ok {
+				return true
+			}
+		}
+		return false
+	} else {
+		for _, lbl := range aggr.Grouping {
+			if _, ok := engineLabels[lbl]; ok {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 func (m DistributedExecutionOptimizer) subqueryOpts(parents map[*Node]*Node, current *Node, opts *query.Options) *query.Options {

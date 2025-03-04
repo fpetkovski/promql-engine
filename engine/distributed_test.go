@@ -218,6 +218,7 @@ func TestDistributedAggregations(t *testing.T) {
 		{name: "label based pruning with no match", query: `sum by (pod) (bar{zone="north-2"})`},
 		{name: "label based pruning with one match", query: `sum by (pod) (bar{zone="east-1"})`},
 		{name: "double aggregation", query: `max by (pod) (sum by (pod) (bar))`},
+		{name: "double aggregation", query: `max by (pod) (sum by (zone, pod) (bar))`},
 		{name: "aggregation with function operand", query: `sum by (pod) (rate(bar[1m]))`},
 		{name: "binary expression with constant operand", query: `sum by (region) (bar * 60)`},
 		{name: "binary expression with distributable pairing", query: `sum by (pod) (bar * bar)`},
@@ -318,6 +319,8 @@ func TestDistributedAggregations(t *testing.T) {
 									promQry, err := promEngine.NewInstantQuery(ctx, completeSeriesSet, queryOpts, query.query, instantTS)
 									testutil.Ok(t, err)
 									promResult := promQry.Exec(ctx)
+
+									fmt.Println(queryExplanation(distQry))
 
 									testutil.WithGoCmp(comparer).Equals(t, promResult, distResult, queryExplanation(distQry))
 								})

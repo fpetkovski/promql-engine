@@ -441,6 +441,15 @@ count by (cluster) (
 			expected:          `dedup(remote(metric_a), remote(metric_a)) / dedup(remote(metric_b), remote(metric_b))`,
 			skipBinopPushdown: true,
 		},
+		{
+			name:              "skip binary pushdown when configured 2",
+			expr:              `sum by (region, namespace, pod, container) (
+  irate(container_cpu_usage_seconds_total{job="cadvisor", image!=""}[5m])
+) * on (region, namespace, pod) group_left(node) topk by (region, namespace, pod) (
+  1, max by(region, namespace, pod, node) (kube_pod_info{node!=""})
+)`,
+			expected:          `dedup(remote(metric_a), remote(metric_a)) / dedup(remote(metric_b), remote(metric_b))`,
+		},
 	}
 
 	engines := []api.RemoteEngine{
