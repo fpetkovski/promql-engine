@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -146,7 +147,7 @@ func (o *matrixSelector) GetPool() *model.VectorPool {
 	return o.vectorPool
 }
 
-func (o *matrixSelector) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
+func (o *matrixSelector) Next(ctx context.Context, vectors []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -165,9 +166,11 @@ func (o *matrixSelector) Next(ctx context.Context, in []model.StepVector) ([]mod
 	}
 
 	ts := o.currentStep
-	vectors := o.vectorPool.GetVectorBatch()
+	vectors = slices.Grow(vectors, o.numSteps)[:0]
 	for currStep := 0; currStep < o.numSteps && ts <= o.maxt; currStep++ {
-		vectors = append(vectors, o.vectorPool.GetStepVector(ts))
+		n := len(vectors)
+		vectors = vectors[:n+1]
+		vectors[n].Reset(ts)
 		ts += o.step
 	}
 
@@ -198,9 +201,9 @@ func (o *matrixSelector) Next(ctx context.Context, in []model.StepVector) ([]mod
 			if ok {
 				vectors[currStep].T = seriesTs
 				if h != nil {
-					vectors[currStep].AppendHistogram(o.vectorPool, scanner.signature, h)
+					vectors[currStep].AppendHistogram(nil, scanner.signature, h)
 				} else {
-					vectors[currStep].AppendSample(o.vectorPool, scanner.signature, f)
+					vectors[currStep].AppendSample(nil, scanner.signature, f)
 					o.hasFloats = true
 				}
 			}
@@ -251,7 +254,6 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 		if o.seriesBatchSize == 0 || numSeries < o.seriesBatchSize {
 			o.seriesBatchSize = numSeries
 		}
-		o.vectorPool.SetStepSize(int(o.seriesBatchSize))
 
 		// Add a warning if rate or increase is applied on metrics which are not named like counters.
 		if o.functionName == "rate" || o.functionName == "increase" {

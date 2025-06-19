@@ -58,6 +58,7 @@ func (p Scanners) NewVectorSelector(
 		selector = newHistogramStatsSelector(selector)
 	}
 
+	opts.DecodingConcurrency = 1
 	operators := make([]model.VectorOperator, 0, opts.DecodingConcurrency)
 	for i := range opts.DecodingConcurrency {
 		operator := exchange.NewConcurrent(

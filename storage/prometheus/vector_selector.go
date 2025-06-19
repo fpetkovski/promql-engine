@@ -6,6 +6,7 @@ package prometheus
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -112,7 +113,7 @@ func (o *vectorSelector) GetPool() *model.VectorPool {
 	return o.vectorPool
 }
 
-func (o *vectorSelector) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
+func (o *vectorSelector) Next(ctx context.Context, vectors []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -127,9 +128,11 @@ func (o *vectorSelector) Next(ctx context.Context, in []model.StepVector) ([]mod
 	}
 
 	ts := o.currentStep
-	vectors := o.vectorPool.GetVectorBatch()
+	vectors = slices.Grow(vectors, o.numSteps)[:0]
 	for currStep := 0; currStep < o.numSteps && ts <= o.maxt; currStep++ {
-		vectors = append(vectors, o.vectorPool.GetStepVector(ts))
+		n := len(vectors)
+		vectors = vectors[:n+1]
+		vectors[n].Reset(ts)
 		ts += o.step
 	}
 
@@ -153,10 +156,10 @@ func (o *vectorSelector) Next(ctx context.Context, in []model.StepVector) ([]mod
 			}
 			if ok {
 				if h != nil && !o.selectTimestamp {
-					vectors[currStep].AppendHistogram(o.vectorPool, series.signature, h)
+					vectors[currStep].AppendHistogram(nil, series.signature, h)
 					currStepSamples += telemetry.CalculateHistogramSampleCount(h)
 				} else {
-					vectors[currStep].AppendSample(o.vectorPool, series.signature, v)
+					vectors[currStep].AppendSample(nil, series.signature, v)
 					currStepSamples++
 				}
 			}
@@ -202,7 +205,6 @@ func (o *vectorSelector) loadSeries(ctx context.Context) error {
 		if o.seriesBatchSize == 0 || numSeries < o.seriesBatchSize {
 			o.seriesBatchSize = numSeries
 		}
-		o.vectorPool.SetStepSize(int(o.seriesBatchSize))
 	})
 	return err
 }

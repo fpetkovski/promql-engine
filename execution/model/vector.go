@@ -27,7 +27,7 @@ type StepVector struct {
 }
 
 func (s *StepVector) AppendSample(pool *VectorPool, id uint64, val float64) {
-	if s.Samples == nil {
+	if s.Samples == nil && pool != nil {
 		s.SampleIDs, s.Samples = pool.getSampleBuffers()
 	}
 	s.SampleIDs = append(s.SampleIDs, id)
@@ -38,7 +38,7 @@ func (s *StepVector) AppendSamples(pool *VectorPool, ids []uint64, vals []float6
 	if len(ids) == 0 && len(vals) == 0 {
 		return
 	}
-	if s.Samples == nil {
+	if s.Samples == nil && pool != nil {
 		s.SampleIDs, s.Samples = pool.getSampleBuffers()
 	}
 	s.SampleIDs = append(s.SampleIDs, ids...)
@@ -51,7 +51,7 @@ func (s *StepVector) RemoveSample(index int) {
 }
 
 func (s *StepVector) AppendHistogram(pool *VectorPool, histogramID uint64, h *histogram.FloatHistogram) {
-	if s.Histograms == nil {
+	if s.Histograms == nil && pool != nil {
 		s.HistogramIDs, s.Histograms = pool.getHistogramBuffers()
 	}
 	s.HistogramIDs = append(s.HistogramIDs, histogramID)
@@ -62,7 +62,7 @@ func (s *StepVector) AppendHistograms(pool *VectorPool, histogramIDs []uint64, h
 	if len(histogramIDs) == 0 && len(hs) == 0 {
 		return
 	}
-	if s.Histograms == nil {
+	if s.Histograms == nil && pool != nil {
 		s.HistogramIDs, s.Histograms = pool.getHistogramBuffers()
 	}
 	s.HistogramIDs = append(s.HistogramIDs, histogramIDs...)
@@ -72,4 +72,12 @@ func (s *StepVector) AppendHistograms(pool *VectorPool, histogramIDs []uint64, h
 func (s *StepVector) RemoveHistogram(index int) {
 	s.Histograms = slices.Delete(s.Histograms, index, index+1)
 	s.HistogramIDs = slices.Delete(s.HistogramIDs, index, index+1)
+}
+
+func (s *StepVector) Reset(ts int64) {
+	s.T = ts
+	s.Samples = s.Samples[:0]
+	s.SampleIDs = s.SampleIDs[:0]
+	s.HistogramIDs = s.HistogramIDs[:0]
+	s.Histograms = s.Histograms[:0]
 }

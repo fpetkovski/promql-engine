@@ -21,17 +21,21 @@ type maybeStepVector struct {
 }
 
 type concurrencyOperator struct {
-	once       sync.Once
-	next       model.VectorOperator
-	buffer     chan maybeStepVector
+	once sync.Once
+	next model.VectorOperator
+
+	nextVector chan maybeStepVector
+	buffer     []maybeStepVector
 	bufferSize int
+	head       int
 }
 
 func NewConcurrent(next model.VectorOperator, bufferSize int, opts *query.Options) model.VectorOperator {
 	oper := &concurrencyOperator{
 		next:       next,
-		buffer:     make(chan maybeStepVector, bufferSize),
 		bufferSize: bufferSize,
+		buffer:     make([]maybeStepVector, bufferSize),
+		nextVector: make(chan maybeStepVector, bufferSize),
 	}
 
 	return telemetry.NewOperator(telemetry.NewTelemetry(oper, opts), oper)
@@ -57,53 +61,43 @@ func (c *concurrencyOperator) GetPool() *model.VectorPool {
 	return c.next.GetPool()
 }
 
-func (c *concurrencyOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
+func (c *concurrencyOperator) Next(ctx context.Context, _ []model.StepVector) ([]model.StepVector, error) {
+	c.once.Do(func() {
+		go c.pull(ctx)
+	})
+
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	default:
+	case v, ok := <-c.nextVector:
+		if !ok {
+			return nil, nil
+		}
+		if v.err != nil {
+			return nil, v.err
+		}
+		return v.stepVector, nil
 	}
-
-	c.once.Do(func() {
-		go c.pull(ctx)
-		go c.drainBufferOnCancel(ctx)
-	})
-
-	r, ok := <-c.buffer
-	if !ok {
-		return nil, nil
-	}
-	if r.err != nil {
-		return nil, r.err
-	}
-
-	return r.stepVector, nil
 }
 
 func (c *concurrencyOperator) pull(ctx context.Context) {
-	defer close(c.buffer)
+	defer func() {
+		close(c.nextVector)
+	}()
 
 	for {
+		r, err := c.next.Next(ctx, c.buffer[c.head].stepVector)
+		if r == nil && err == nil {
+			return
+		}
+		c.buffer[c.head] = maybeStepVector{stepVector: r, err: err}
+
 		select {
 		case <-ctx.Done():
-			c.buffer <- maybeStepVector{err: ctx.Err()}
+			c.buffer[c.head].err = ctx.Err()
 			return
-		default:
-			r, err := c.next.Next(ctx, nil)
-			if err != nil {
-				c.buffer <- maybeStepVector{err: err}
-				return
-			}
-			if r == nil {
-				return
-			}
-			c.buffer <- maybeStepVector{stepVector: r}
+		case c.nextVector <- c.buffer[c.head]:
+			c.head = (c.head + 1) % c.bufferSize
 		}
-	}
-}
-
-func (c *concurrencyOperator) drainBufferOnCancel(ctx context.Context) {
-	<-ctx.Done()
-	for range c.buffer {
 	}
 }
