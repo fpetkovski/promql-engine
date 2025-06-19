@@ -87,7 +87,7 @@ func (u *stepInvariantOperator) GetPool() *model.VectorPool {
 	return u.vectorPool
 }
 
-func (u *stepInvariantOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (u *stepInvariantOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -99,7 +99,7 @@ func (u *stepInvariantOperator) Next(ctx context.Context) ([]model.StepVector, e
 	}
 
 	if !u.cacheResult {
-		return u.next.Next(ctx)
+		return u.next.Next(ctx, nil)
 	}
 
 	if err := u.cacheInputVector(ctx); err != nil {
@@ -122,7 +122,7 @@ func (u *stepInvariantOperator) cacheInputVector(ctx context.Context) error {
 	var err error
 	var in []model.StepVector
 	u.cacheVectorOnce.Do(func() {
-		in, err = u.next.Next(ctx)
+		in, err = u.next.Next(ctx, nil)
 		if err != nil {
 			return
 		}

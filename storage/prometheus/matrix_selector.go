@@ -146,7 +146,7 @@ func (o *matrixSelector) GetPool() *model.VectorPool {
 	return o.vectorPool
 }
 
-func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
+func (o *matrixSelector) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()

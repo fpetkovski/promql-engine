@@ -74,7 +74,7 @@ func (c *countValuesOperator) Series(ctx context.Context) ([]labels.Labels, erro
 	return c.series, err
 }
 
-func (c *countValuesOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (c *countValuesOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -147,7 +147,7 @@ func (c *countValuesOperator) initSeriesOnce(ctx context.Context) error {
 		default:
 		}
 
-		in, err := c.next.Next(ctx)
+		in, err := c.next.Next(ctx, nil)
 		if err != nil {
 			return err
 		}

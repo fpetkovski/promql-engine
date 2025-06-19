@@ -101,7 +101,7 @@ func (o *subqueryOperator) Explain() (next []model.VectorOperator) {
 
 func (o *subqueryOperator) GetPool() *model.VectorPool { return o.pool }
 
-func (o *subqueryOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (o *subqueryOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -115,7 +115,7 @@ func (o *subqueryOperator) Next(ctx context.Context) ([]model.StepVector, error)
 	}
 
 	if o.paramOp != nil {
-		args, err := o.paramOp.Next(ctx)
+		args, err := o.paramOp.Next(ctx, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -130,7 +130,7 @@ func (o *subqueryOperator) Next(ctx context.Context) ([]model.StepVector, error)
 	}
 
 	if o.paramOp2 != nil { // double_exponential_smoothing
-		args, err := o.paramOp2.Next(ctx)
+		args, err := o.paramOp2.Next(ctx, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +168,7 @@ func (o *subqueryOperator) Next(ctx context.Context) ([]model.StepVector, error)
 
 	ACC:
 		for len(o.lastVectors) == 0 {
-			vectors, err := o.next.Next(ctx)
+			vectors, err := o.next.Next(ctx, nil)
 			if err != nil {
 				return nil, err
 			}

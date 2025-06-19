@@ -61,7 +61,7 @@ func (o *numberLiteralSelector) GetPool() *model.VectorPool {
 	return o.vectorPool
 }
 
-func (o *numberLiteralSelector) Next(ctx context.Context) ([]model.StepVector, error) {
+func (o *numberLiteralSelector) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()

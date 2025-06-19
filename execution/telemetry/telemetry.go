@@ -201,10 +201,10 @@ func (t *Operator) Series(ctx context.Context) ([]labels.Labels, error) {
 	return s, err
 }
 
-func (t *Operator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (t *Operator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	start := time.Now()
 	defer func() { t.OperatorTelemetry.AddNextExecutionTime(time.Since(start)) }()
-	return t.inner.Next(ctx)
+	return t.inner.Next(ctx, nil)
 }
 
 func (t *Operator) GetPool() *model.VectorPool {

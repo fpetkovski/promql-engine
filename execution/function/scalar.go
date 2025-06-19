@@ -44,14 +44,14 @@ func (o *scalarOperator) GetPool() *model.VectorPool {
 	return o.pool
 }
 
-func (o *scalarOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (o *scalarOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
 	}
 
-	in, err := o.next.Next(ctx)
+	in, err := o.next.Next(ctx, nil)
 	if err != nil {
 		return nil, err
 	}

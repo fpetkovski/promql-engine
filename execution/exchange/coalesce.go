@@ -84,7 +84,7 @@ func (c *coalesce) Series(ctx context.Context) ([]labels.Labels, error) {
 	return c.series, nil
 }
 
-func (c *coalesce) Next(ctx context.Context) ([]model.StepVector, error) {
+func (c *coalesce) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -110,7 +110,7 @@ func (c *coalesce) Next(ctx context.Context) ([]model.StepVector, error) {
 		go func(opIdx int, o model.VectorOperator) {
 			defer c.wg.Done()
 
-			in, err := o.Next(ctx)
+			in, err := o.Next(ctx, nil)
 			if err != nil {
 				errChan <- err
 				return

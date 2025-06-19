@@ -112,7 +112,7 @@ func (o *vectorSelector) GetPool() *model.VectorPool {
 	return o.vectorPool
 }
 
-func (o *vectorSelector) Next(ctx context.Context) ([]model.StepVector, error) {
+func (o *vectorSelector) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()

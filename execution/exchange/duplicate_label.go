@@ -32,7 +32,7 @@ func NewDuplicateLabelCheck(next model.VectorOperator, opts *query.Options) mode
 	return telemetry.NewOperator(telemetry.NewTelemetry(oper, opts), oper)
 }
 
-func (d *duplicateLabelCheckOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (d *duplicateLabelCheckOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -43,7 +43,7 @@ func (d *duplicateLabelCheckOperator) Next(ctx context.Context) ([]model.StepVec
 		return nil, err
 	}
 
-	in, err := d.next.Next(ctx)
+	in, err := d.next.Next(ctx, nil)
 	if err != nil {
 		return nil, err
 	}

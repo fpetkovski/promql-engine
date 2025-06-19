@@ -13,7 +13,7 @@ import (
 // VectorOperator performs operations on series in step by step fashion.
 type VectorOperator interface {
 	// Next yields vectors of samples from all series for one or more execution steps.
-	Next(ctx context.Context) ([]StepVector, error)
+	Next(ctx context.Context, in []StepVector) ([]StepVector, error)
 
 	// Series returns all series that the operator will process during Next results.
 	// The result can be used by upstream operators to allocate output tables and buffers

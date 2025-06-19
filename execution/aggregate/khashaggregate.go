@@ -84,19 +84,19 @@ func NewKHashAggregate(
 	return telemetry.NewOperator(telemetry.NewTelemetry(op, opts), op), nil
 }
 
-func (a *kAggregate) Next(ctx context.Context) ([]model.StepVector, error) {
+func (a *kAggregate) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
 	}
 
-	in, err := a.next.Next(ctx)
+	in, err := a.next.Next(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	args, err := a.paramOp.Next(ctx)
+	args, err := a.paramOp.Next(ctx, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -105,7 +105,7 @@ type vectorSelectorOperator struct {
 	currentStep int64
 }
 
-func (c *vectorSelectorOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (c *vectorSelectorOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	if c.currentStep > c.maxt {
 		return nil, nil
 	}

@@ -57,7 +57,7 @@ func (c *concurrencyOperator) GetPool() *model.VectorPool {
 	return c.next.GetPool()
 }
 
-func (c *concurrencyOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (c *concurrencyOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -89,7 +89,7 @@ func (c *concurrencyOperator) pull(ctx context.Context) {
 			c.buffer <- maybeStepVector{err: ctx.Err()}
 			return
 		default:
-			r, err := c.next.Next(ctx)
+			r, err := c.next.Next(ctx, nil)
 			if err != nil {
 				c.buffer <- maybeStepVector{err: err}
 				return

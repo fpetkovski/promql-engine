@@ -98,7 +98,7 @@ func (o *vectorOperator) Series(ctx context.Context) ([]labels.Labels, error) {
 	return o.series, nil
 }
 
-func (o *vectorOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (o *vectorOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -114,14 +114,14 @@ func (o *vectorOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 	var lerrChan = make(chan error, 1)
 	go func() {
 		var err error
-		lhs, err = o.lhs.Next(ctx)
+		lhs, err = o.lhs.Next(ctx, nil)
 		if err != nil {
 			lerrChan <- err
 		}
 		close(lerrChan)
 	}()
 
-	rhs, rerr := o.rhs.Next(ctx)
+	rhs, rerr := o.rhs.Next(ctx, nil)
 	lerr := <-lerrChan
 	if rerr != nil {
 		return nil, rerr

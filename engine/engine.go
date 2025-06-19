@@ -568,7 +568,7 @@ loop:
 		case <-ctx.Done():
 			return newErrResult(ret, ctx.Err())
 		default:
-			r, err := q.Query.exec.Next(ctx)
+			r, err := q.Query.exec.Next(ctx, nil)
 			if err != nil {
 				return newErrResult(ret, err)
 			}

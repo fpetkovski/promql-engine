@@ -145,7 +145,7 @@ func (o *functionOperator) GetPool() *model.VectorPool {
 	return o.nextOps[o.vectorIndex].GetPool()
 }
 
-func (o *functionOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (o *functionOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -157,7 +157,7 @@ func (o *functionOperator) Next(ctx context.Context) ([]model.StepVector, error)
 
 	// Process non-variadic single/multi-arg instant vector and scalar input functions.
 	// Call next on vector input.
-	vectors, err := o.nextOps[o.vectorIndex].Next(ctx)
+	vectors, err := o.nextOps[o.vectorIndex].Next(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +171,7 @@ func (o *functionOperator) Next(ctx context.Context) ([]model.StepVector, error)
 			continue
 		}
 
-		scalarVectors, err := o.nextOps[i].Next(ctx)
+		scalarVectors, err := o.nextOps[i].Next(ctx, nil)
 		if err != nil {
 			return nil, err
 		}

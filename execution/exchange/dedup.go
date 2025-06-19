@@ -49,14 +49,14 @@ func NewDedupOperator(pool *model.VectorPool, next model.VectorOperator, opts *q
 	return telemetry.NewOperator(telemetry.NewTelemetry(oper, opts), oper)
 }
 
-func (d *dedupOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (d *dedupOperator) Next(ctx context.Context, _ []model.StepVector) ([]model.StepVector, error) {
 	var err error
 	d.once.Do(func() { err = d.loadSeries(ctx) })
 	if err != nil {
 		return nil, err
 	}
 
-	in, err := d.next.Next(ctx)
+	in, err := d.next.Next(ctx, nil)
 	if err != nil {
 		return nil, err
 	}

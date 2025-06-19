@@ -66,14 +66,14 @@ func (u *unaryNegation) GetPool() *model.VectorPool {
 	return u.next.GetPool()
 }
 
-func (u *unaryNegation) Next(ctx context.Context) ([]model.StepVector, error) {
+func (u *unaryNegation) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
 	}
 
-	in, err := u.next.Next(ctx)
+	in, err := u.next.Next(ctx, nil)
 	if err != nil {
 		return nil, err
 	}

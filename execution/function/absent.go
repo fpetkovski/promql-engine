@@ -89,7 +89,7 @@ func (o *absentOperator) GetPool() *model.VectorPool {
 	return o.pool
 }
 
-func (o *absentOperator) Next(ctx context.Context) ([]model.StepVector, error) {
+func (o *absentOperator) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -98,7 +98,7 @@ func (o *absentOperator) Next(ctx context.Context) ([]model.StepVector, error) {
 
 	o.loadSeries()
 
-	vectors, err := o.next.Next(ctx)
+	vectors, err := o.next.Next(ctx, nil)
 	if err != nil {
 		return nil, err
 	}

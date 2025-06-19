@@ -58,8 +58,8 @@ func (e *Execution) String() string {
 	return fmt.Sprintf("[remoteExec] %s (%d, %d)", e.query, e.queryRangeStart.Unix(), e.queryRangeEnd.Unix())
 }
 
-func (e *Execution) Next(ctx context.Context) ([]model.StepVector, error) {
-	next, err := e.vectorSelector.Next(ctx)
+func (e *Execution) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
+	next, err := e.vectorSelector.Next(ctx, nil)
 	if next == nil {
 		// Closing the storage prematurely can lead to results from the query
 		// engine to be recycled. Because of this, we close the storage only

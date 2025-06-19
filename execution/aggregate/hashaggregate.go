@@ -103,7 +103,7 @@ func (a *aggregate) GetPool() *model.VectorPool {
 	return a.vectorPool
 }
 
-func (a *aggregate) Next(ctx context.Context) ([]model.StepVector, error) {
+func (a *aggregate) Next(ctx context.Context, in []model.StepVector) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -117,7 +117,7 @@ func (a *aggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 	}
 
 	if a.paramOp != nil {
-		args, err := a.paramOp.Next(ctx)
+		args, err := a.paramOp.Next(ctx, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -141,7 +141,7 @@ func (a *aggregate) Next(ctx context.Context) ([]model.StepVector, error) {
 		a.lastBatch = nil
 	}
 	for {
-		next, err := a.next.Next(ctx)
+		next, err := a.next.Next(ctx, nil)
 		if err != nil {
 			return nil, err
 		}
