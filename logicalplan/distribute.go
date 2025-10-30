@@ -344,17 +344,21 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *Node, engines []api
 	remoteQueries := make(RemoteExecutions, 0, len(engines))
 	for _, e := range engines {
 		if !matchesExternalLabelSet(*expr, e.LabelSets()) {
+			fmt.Println("Engine does not match external labels")
 			continue
 		}
-		if e.MinT() > opts.End.UnixMilli() {
+		if x := e.MinT(); x > opts.End.UnixMilli() {
+			fmt.Println("Engine does not match min time", "engine_time", time.UnixMilli(x).UTC())
 			continue
 		}
-		if e.MaxT() < opts.Start.UnixMilli()-startOffset.Milliseconds() {
+		if x := e.MaxT(); x < opts.Start.UnixMilli()-startOffset.Milliseconds() {
+			fmt.Println("Engine does not match max time", "engine_time", time.UnixMilli(x).UTC())
 			continue
 		}
 
 		start, keep := getStartTimeForEngine(e, opts, startOffset, globalMinT)
 		if !keep {
+			fmt.Println("Engine does not match start time")
 			continue
 		}
 
