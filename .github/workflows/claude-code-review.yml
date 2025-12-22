@@ -40,6 +40,15 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
+            CRITICAL: Read CLAUDE.md FIRST for fork-specific requirements!
+
+            This is a FORK of thanos-io/promql-engine. Before reviewing:
+            1. Check if this PR targets upstream using `gh pr view`
+            2. If targeting upstream and branch contains fork-specific files (.github/workflows/claude*.yml, CLAUDE.md):
+               - DO NOT add removal commits
+               - Comment on the PR that the branch should be recreated from upstream/main
+               - Refer to CLAUDE.md section "If You Already Created a Branch from Fork's Main"
+
             Please review this pull request and provide feedback on:
             - Code quality and best practices
             - Potential bugs or issues
