@@ -1,0 +1,1304 @@
+# eval instant at 2m ts_of_min_over_time, with 2m lookback
+  load 5s
+  http_requests{path="/foo"}	0+10x10
+  http_requests{path="/bar"}	0+10x5 0+10x4
+eval instant at 120s ts_of_min_over_time(http_requests[2m])
+
+clear
+
+# eval instant at 2m ts_of_max_over_time, with 2m lookback
+  load 5s
+  http_requests{path="/foo"}	0+10x10
+  http_requests{path="/bar"}	0+10x5 0+10x4
+eval instant at 120s ts_of_max_over_time(http_requests[2m])
+
+clear
+
+# eval instant at 2m ts_of_max_over_time, with subquery
+  load 5s
+  http_requests{path="/foo"}	0+10x10
+  http_requests{path="/bar"}	0+10x5 0+10x4
+eval instant at 120s ts_of_max_over_time(rate(http_requests[30s])[2m:5s])
+
+clear
+
+# count_values fuzz
+  load 30s
+  http_requests_total{pod="nginx-1", route="/"} 51.00+1.00x40
+  http_requests_total{pod="nginx-2", route="/"} -74+14.00x40
+eval instant at 50s count_values without () (
+  "value",
+    (atanh(http_requests_total{pod="nginx-1"}) > tanh(http_requests_total{route="/"}))
+  or
+    avg by (pod, __name__) (http_requests_total{route="/"})
+)
+
+clear
+
+# sum evaluates to -0 fuzz
+  load 30s
+  http_requests_total{pod="nginx-2", route="/"}  0
+eval instant at 0s sum by (pod) (-http_requests_total) atan2 -0
+
+clear
+
+# count_values
+  load 30s
+  version{foo="bar"} 1
+  version{foo="baz"} 1
+  version{foo="quz"} 2
+eval instant at 0s count_values("val", version)
+
+clear
+
+# binary pairing early exit fuzz
+  load 30s
+  http_requests_total{pod="nginx-1", route="/"} 33.00+1.00x40
+  http_requests_total{pod="nginx-2", route="/"}  1+2.00x40
+eval instant at 0s avg without (route) (avg(http_requests_total) / http_requests_total)
+<=
+  sum by (__name__) (http_requests_total or avg(http_requests_total))
+
+clear
+
+# offset and @ modifiers
+  load 30s
+  http_requests_total{pod="nginx-0", route="/"} 1+1x30
+eval instant at 300s http_requests_total @ end() offset 2m
+
+clear
+
+# timestamp - offset modifier
+  load 30s
+  http_requests_total{pod="nginx-0", route="/"} 0x30
+eval instant at 300s timestamp(http_requests_total offset 2m)
+
+clear
+
+# timestamp - @ modifier
+  load 30s
+  http_requests_total{pod="nginx-0", route="/"} 0x30
+eval instant at 300s timestamp(http_requests_total @ 60.000)
+
+clear
+
+# timestamp - nested functions with offset
+  load 30s
+  http_requests_total{pod="nginx-0", route="/"} 0x30
+eval instant at 300s timestamp(timestamp(http_requests_total offset 2m))
+
+clear
+
+# timestamp - nested functions without any scan
+eval instant at 300s timestamp(vector(1))
+
+# timestamp - aggregation
+  load 30s
+  http_requests_total{pod="nginx-0", route="/"} 0x30
+eval instant at 300s timestamp(sum(http_requests_total))
+
+clear
+
+# timestamp - fuzzing failure
+  load 30s
+  http_requests_total{pod="nginx-1"} 1.00+1.00x15
+  http_requests_total{pod="nginx-2"}  1+2.00x21
+eval instant at 300s timestamp(http_requests_total @ end() offset -2m23s)
+
+clear
+
+# fuzz - min with NaN
+  load 30s
+  http_requests_total{pod="nginx-1", route="/"} 0
+  http_requests_total{pod="nginx-2", route="/"}  NaN
+eval instant at 0s min without (__name__, pod) (http_requests_total)
+
+clear
+
+# fuzz - max with NaN
+  load 30s
+  http_requests_total{pod="nginx-1", route="/"} 0
+  http_requests_total{pod="nginx-2", route="/"}  NaN
+eval instant at 0s max without (__name__, pod) (http_requests_total)
+
+clear
+
+# fuzz - min with NaN
+  load 30s
+  http_requests_total{pod="nginx-1", route="/"} 124.00+1.00x40
+  http_requests_total{pod="nginx-2", route="/"}  0+0.29x40
+eval instant at 50s min by (route, pod) (sqrt(-http_requests_total))
+
+clear
+
+# fuzz - min with Inf
+  load 30s
+  http_requests_total{pod="nginx-1", route="/"} 483.00+6035.00x40
+  http_requests_total{pod="nginx-2", route="/"}  2+47.14x40
+eval instant at 50s min without () (
+  (
+      {__name__="http_requests_total"} @ start() offset -2m40s
+    ^
+      {__name__="http_requests_total"} @ start() offset -2m49s
+  )
+)
+
+clear
+
+# sum_over_time with subquery
+  load 10s
+  http_requests_total{pod="nginx-1", series="1"} 1+1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2x50
+  http_requests_total{pod="nginx-5", series="1"} 8+4x50
+  http_requests_total{pod="nginx-6", series="2"} 2+3x50
+eval instant at 600s sum_over_time(sum by (series) (http_requests_total)[5m:1m])
+
+clear
+
+# sum_over_time with subquery with default step
+  load 10s
+  http_requests_total{pod="nginx-1", series="1"} 1+1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2x50
+  http_requests_total{pod="nginx-5", series="1"} 8+4x50
+  http_requests_total{pod="nginx-6", series="2"} 2+3x50
+eval instant at 600s sum_over_time(sum by (series) (http_requests_total)[5m:])
+
+clear
+
+# sum_over_time with subquery with resolution that doesnt divide step length
+  load 10s
+  http_requests_total{pod="nginx-1", series="1"} 1+1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2x50
+  http_requests_total{pod="nginx-5", series="1"} 8+4x50
+  http_requests_total{pod="nginx-6", series="2"} 2+3x50
+eval instant at 600s sum_over_time(sum by (series) (http_requests_total)[5m:22s])
+
+clear
+
+# sum_over_time with subquery with offset
+  load 10s
+  http_requests_total{pod="nginx-1", series="1"} 1+1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2x50
+  http_requests_total{pod="nginx-5", series="1"} 8+4x50
+  http_requests_total{pod="nginx-6", series="2"} 2+3x50
+eval instant at 600s sum_over_time(sum by (series) (http_requests_total)[5m:1m] offset 1m)
+
+clear
+
+# sum_over_time with subquery with inner offset
+  load 10s
+  http_requests_total{pod="nginx-1", series="1"} 1+1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2x50
+  http_requests_total{pod="nginx-5", series="1"} 8+4x50
+  http_requests_total{pod="nginx-6", series="2"} 2+3x50
+eval instant at 600s sum_over_time(sum by (series) (http_requests_total offset 1m)[5m:1m])
+
+clear
+
+# sum_over_time with subquery with inner @ modifier
+  load 10s
+  http_requests_total{pod="nginx-1", series="1"} 1+1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2x50
+  http_requests_total{pod="nginx-5", series="1"} 8+4x50
+  http_requests_total{pod="nginx-6", series="2"} 2+3x50
+eval instant at 600s sum_over_time(sum by (series) (http_requests_total @ 10.000)[5m:1m])
+
+clear
+
+# sum_over_time with nested subqueries with inner @ modifier
+  load 10s
+  http_requests_total{pod="nginx-1", series="1"} 1+1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2x50
+  http_requests_total{pod="nginx-5", series="1"} 8+4x50
+  http_requests_total{pod="nginx-6", series="2"} 2+3x50
+eval instant at 600s sum_over_time(rate(sum by (series) (http_requests_total @ 10.000)[5m:1m] @ 0.000)[10m:1m])
+
+clear
+
+# sum_over_time with subquery should drop name label
+  load 10s
+  http_requests_total{pod="nginx-1", series="1"} 1+1x40
+  http_requests_total{pod="nginx-2", series="1"} 2+2x50
+eval instant at 0s sum_over_time(http_requests_total{series="1"} offset 7s[1h:1m] @ 119.800)
+
+clear
+
+# duplicate label set
+  load 5m
+  testmetric1{src="a",dst="b"} 0
+  testmetric2{src="a",dst="b"} 1
+eval instant at 50s changes({__name__=~"testmetric1|testmetric2"}[5m])
+
+clear
+
+# scalar
+eval instant at 160s 12 + 1
+
+# string literal
+eval instant at 160s test - string - literal
+
+# increase plus offset
+  load 1s
+  http_requests_total{pod="nginx-1"} 1+1x180
+eval instant at 160s increase(http_requests_total[1m] offset 1m)
+
+clear
+
+# round
+  load 1s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+  http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+  http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50
+eval instant at 0s round(http_requests_total)
+
+clear
+
+# round with argument
+  load 1s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+  http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+  http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50
+eval instant at 0s round(http_requests_total, 0.5)
+
+clear
+
+# sort
+  load 1s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+  http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+  http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50
+eval instant at 0s sort(http_requests_total)
+
+clear
+
+# sort_desc
+  load 1s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+  http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+  http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50
+eval instant at 0s sort_desc(http_requests_total)
+
+clear
+
+# histogram_quantile with mock duplicate labels
+  load 30s
+  http_requests_total{pod="nginx-2", route="/"}  0+0.14x40
+eval instant at 600s histogram_quantile(10, -http_requests_total or http_requests_total)
+
+clear
+
+# quantile by pod
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+  http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+  http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50
+eval instant at 50s quantile by (pod) (0.9, rate(http_requests_total[1m]))
+
+clear
+
+# quantile by pod with binary
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+  http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+  http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50
+eval instant at 50s quantile by (pod) (1 - 0.1, rate(http_requests_total[1m]))
+
+clear
+
+# quantile by pod with expression
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+  http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+  http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50
+eval instant at 50s quantile by (pod) (scalar(min(http_requests_total)), rate(http_requests_total[1m]))
+
+clear
+
+# quantile
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+  http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+  http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50
+eval instant at 50s quantile(0.9, rate(http_requests_total[1m]))
+
+clear
+
+# stdvar
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x4
+eval instant at 50s stdvar(http_requests_total)
+
+clear
+
+# stdvar by pod
+  load 30s
+  http_requests_total{pod="nginx-1"} 1
+  http_requests_total{pod="nginx-2"} 2
+  http_requests_total{pod="nginx-3"} 8
+  http_requests_total{pod="nginx-4"} 6
+eval instant at 50s stdvar by (pod) (http_requests_total)
+
+clear
+
+# stddev
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x4
+eval instant at 50s stddev(http_requests_total)
+
+clear
+
+# stddev by pod
+  load 30s
+  http_requests_total{pod="nginx-1"} 1
+  http_requests_total{pod="nginx-2"} 2
+  http_requests_total{pod="nginx-3"} 8
+  http_requests_total{pod="nginx-4"} 6
+eval instant at 50s stddev by (pod) (http_requests_total)
+
+clear
+
+# sum by pod
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x4
+eval instant at 50s sum by (pod) (http_requests_total)
+
+clear
+
+# count
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s count(http_requests_total)
+
+clear
+
+# average
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s avg(http_requests_total)
+
+clear
+
+# label_join
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+eval instant at 160s label_join(http_requests_total, "label", "-", "pod", "series")
+
+clear
+
+# label_join with non-existing src labels
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+eval instant at 160s label_join(http_requests_total, "label", "-", "test", "fake")
+
+clear
+
+# label_join with overwrite dst label if exists
+  load 30s
+  http_requests_total{pod="nginx-1", series="1", label="test-1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2", label="test-2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3", label="test-3"} 5+2.4x50
+eval instant at 160s label_join(http_requests_total, "label", "-", "pod", "series")
+
+clear
+
+# label_join with no src labels provided
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+eval instant at 160s label_join(http_requests_total, "label", "-")
+
+clear
+
+# label_replace
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+eval instant at 160s label_replace(http_requests_total, "foo", "$1", "series", ".*")
+
+clear
+
+# label_replace with bad regular expression
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+eval instant at 160s label_replace(http_requests_total, "foo", "$1", "series", "]]")
+
+clear
+
+# label_replace non-existing src label
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+eval instant at 160s label_replace(http_requests_total, "foo", "$1", "bar", ".*")
+
+clear
+
+# topk
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1
+  http_requests_total{pod="nginx-2", series="1"} 2
+  http_requests_total{pod="nginx-3", series="1"} 8
+  http_requests_total{pod="nginx-4", series="2"} 6
+  http_requests_total{pod="nginx-5", series="2"} 8
+  http_requests_total{pod="nginx-6", series="3"} 15
+  http_requests_total{pod="nginx-7", series="3"} 11
+  http_requests_total{pod="nginx-8", series="4"} 22
+  http_requests_total{pod="nginx-9", series="4"} 89
+eval instant at 50s topk(2, http_requests_total)
+
+clear
+
+# topk by series
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1
+  http_requests_total{pod="nginx-2", series="1"} 2
+  http_requests_total{pod="nginx-3", series="1"} 8
+  http_requests_total{pod="nginx-4", series="2"} 6
+  http_requests_total{pod="nginx-5", series="2"} 8
+  http_requests_total{pod="nginx-6", series="3"} 15
+  http_requests_total{pod="nginx-7", series="3"} 11
+  http_requests_total{pod="nginx-8", series="4"} 22
+  http_requests_total{pod="nginx-9", series="4"} 89
+eval instant at 50s topk by (series) (2, http_requests_total)
+
+clear
+
+# bottomK
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1
+  http_requests_total{pod="nginx-2", series="1"} 2
+  http_requests_total{pod="nginx-3", series="1"} 8
+  http_requests_total{pod="nginx-4", series="2"} 6
+  http_requests_total{pod="nginx-5", series="2"} 8
+  http_requests_total{pod="nginx-6", series="3"} 15
+  http_requests_total{pod="nginx-7", series="3"} 11
+  http_requests_total{pod="nginx-8", series="4"} 22
+  http_requests_total{pod="nginx-9", series="4"} 89
+eval instant at 50s bottomk(2, http_requests_total)
+
+clear
+
+# bottomk by series
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1
+  http_requests_total{pod="nginx-2", series="1"} 2
+  http_requests_total{pod="nginx-3", series="1"} 8
+  http_requests_total{pod="nginx-4", series="2"} 6
+  http_requests_total{pod="nginx-5", series="2"} 8
+  http_requests_total{pod="nginx-6", series="3"} 15
+  http_requests_total{pod="nginx-7", series="3"} 11
+  http_requests_total{pod="nginx-8", series="4"} 22
+  http_requests_total{pod="nginx-9", series="4"} 89
+eval instant at 50s bottomk by (series) (2, http_requests_total)
+
+clear
+
+# limitK
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1
+  http_requests_total{pod="nginx-2", series="3"} 2
+  http_requests_total{pod="nginx-3", series="2"} 8
+  http_requests_total{pod="nginx-4", series="5"} 6
+  http_requests_total{pod="nginx-5", series="4"} 8
+  http_requests_total{pod="nginx-6", series="7"} 15
+  http_requests_total{pod="nginx-7", series="6"} 11
+  http_requests_total{pod="nginx-8", series="9"} 22
+  http_requests_total{pod="nginx-9", series="8"} 89
+eval instant at 50s limitk(2, http_requests_total)
+
+clear
+
+# limitk by (pod)
+  load 30s
+  http_requests_total{pod="nginx-1", series="2"} 89
+  http_requests_total{pod="nginx-1", series="1"} 49
+  http_requests_total{pod="nginx-1", series="3"} 19
+  http_requests_total{pod="nginx-2", series="2"} 12
+  http_requests_total{pod="nginx-2", series="1"} 24
+  http_requests_total{pod="nginx-3", series="3"} 8
+  http_requests_total{pod="nginx-3", series="1"} 22
+  http_requests_total{pod="nginx-3", series="2"} 1
+eval instant at 50s limitk(2, http_requests_total) by (pod)
+
+clear
+
+# limitk(x, many-to-many join)
+  load 30s
+  http_requests_total{pod="nginx-1", series="2"} 89
+  http_requests_total{pod="nginx-1", series="1"} 49
+  http_requests_total{pod="nginx-1", series="3"} 19
+  http_requests_total{pod="nginx-2", series="2"} 12
+  http_requests_total{pod="nginx-2", series="1"} 24
+  http_requests_total{pod="nginx-3", series="3"} 8
+  http_requests_total{pod="nginx-3", series="1"} 22
+  http_requests_total{pod="nginx-3", series="2"} 1
+eval instant at 50s limitk(2, http_requests_total or limitk(2, sum without (series) (http_requests_total))) by (pod)
+
+clear
+
+# limit_ratio
+  load 30s
+  http_requests_total{pod="nginx-1", series="3"} 2
+  http_requests_total{pod="nginx-3", series="2"} 4
+  http_requests_total{pod="nginx-5", series="1"} 8
+  http_requests_total{pod="nginx-7", series="1"} 6
+  http_requests_total{pod="nginx-9", series="2"} 12
+  http_requests_total{pod="nginx-11", series="3"} 10
+  http_requests_total{pod="nginx-13", series="2"} 16
+  http_requests_total{pod="nginx-15", series="2"} 12
+  http_requests_total{pod="nginx-17", series="5"} 14
+eval instant at 50s limit_ratio(0.5, http_requests_total)
+
+clear
+
+# limit_ratio by (series)
+  load 30s
+  http_requests_total{pod="nginx-2", series="1"} 1
+  http_requests_total{pod="nginx-4", series="3"} 3
+  http_requests_total{pod="nginx-6", series="2"} 7
+  http_requests_total{pod="nginx-8", series="1"} 5
+  http_requests_total{pod="nginx-10", series="4"} 11
+  http_requests_total{pod="nginx-12", series="1"} 9
+  http_requests_total{pod="nginx-14", series="2"} 17
+  http_requests_total{pod="nginx-16", series="3"} 13
+  http_requests_total{pod="nginx-18", series="2"} 15
+eval instant at 50s limit_ratio by (series) (0.1, http_requests_total)
+
+clear
+
+# limitk(limit_ratios returning all samples)
+  load 30s
+  http_requests_total{pod="nginx-1", series="3"} 1
+  http_requests_total{pod="nginx-3", series="1"} 1
+  http_requests_total{pod="nginx-2", series="3"} 2
+  http_requests_total{pod="nginx-4", series="1"} 3
+  http_requests_total{pod="nginx-6", series="5"} 5
+  http_requests_total{pod="nginx-5", series="1"} 8
+  http_requests_total{pod="nginx-10", series="2"} 13
+  http_requests_total{pod="nginx-12", series="3"} 21
+  http_requests_total{pod="nginx-7", series="2"} 34
+eval instant at 50s limitk(9, limit_ratio(0.5, http_requests_total) or limit_ratio(-0.5, http_requests_total))
+
+clear
+
+# max
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s max(http_requests_total)
+
+clear
+
+# max with only 1 sample
+  load 30s
+  http_requests_total{pod="nginx-1"} -1
+  http_requests_total{pod="nginx-2"} 1
+eval instant at 50s max by (pod) (http_requests_total)
+
+clear
+
+# min
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s min(http_requests_total)
+
+clear
+
+# min with only 1 sample
+  load 30s
+  http_requests_total{pod="nginx-1"} -1
+  http_requests_total{pod="nginx-2"} 1
+eval instant at 50s min by (pod) (http_requests_total)
+
+clear
+
+# rate
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="2"} 2+2.3x50
+  http_requests_total{pod="nginx-4", series="3"} 5+2.4x50
+  http_requests_total{pod="nginx-5", series="1"} 8.4+2.3x50
+  http_requests_total{pod="nginx-6", series="2"} 2.3+2.3x50
+eval instant at 50s rate(http_requests_total[1m])
+
+clear
+
+# sum rate
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x4
+eval instant at 50s sum(rate(http_requests_total[1m]))
+
+clear
+
+# sum rate with single sample series
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x4
+  http_requests_total{pod="nginx-3"} 0
+eval instant at 50s sum by (pod) (rate(http_requests_total[1m]))
+
+clear
+
+# sum rate with stale series
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x20
+eval instant at 50s sum(rate(http_requests_total[1m]))
+
+clear
+
+# delta
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x4
+eval instant at 50s delta(http_requests_total[1m])
+
+clear
+
+# increase
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x4
+eval instant at 50s increase(http_requests_total[1m])
+
+clear
+
+# sum irate
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x4
+eval instant at 50s sum(irate(http_requests_total[1m]))
+
+clear
+
+# sum irate with stale series
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x4
+  http_requests_total{pod="nginx-2"} 1+2x20
+eval instant at 50s sum(irate(http_requests_total[1m]))
+
+clear
+
+# number literal
+eval instant at 50s 34
+
+# vector
+eval instant at 50s vector(24)
+
+# binary operation with vector and scalar on the right
+  load 30s
+  foo{method="get", code="500"} 1+1.1x30
+  foo{method="get", code="404"} 1+2.2x20
+eval instant at 50s foo * 2
+
+clear
+
+# binary operation with vector and scalar on the left
+  load 30s
+  foo{method="get", code="500"} 1+1.1x30
+  foo{method="get", code="404"} 1+2.2x20
+eval instant at 50s 2 * foo
+
+clear
+
+# complex binary operation
+  load 30s
+  foo{method="get", code="500"} 1+1.1x30
+  foo{method="get", code="404"} 1+2.2x20
+eval instant at 50s 1 - (100 * sum(foo{method="get"}) / sum(foo))
+
+clear
+
+# vector binary op ==
+  load 30s
+  foo{method="get", code="500"} 1+1x40
+  bar{method="get", code="404"} 1+1.1x30
+eval instant at 50s sum by (method) (foo) == sum by (method) (bar)
+
+clear
+
+# vector binary op !=
+  load 30s
+  foo{method="get", code="500"} 1+1x40
+  bar{method="get", code="404"} 1+1.1x30
+eval instant at 50s sum by (method) (foo) != sum by (method) (bar)
+
+clear
+
+# vector binary op >
+  load 30s
+  foo{method="get", code="500"} 1+1x40
+  bar{method="get", code="404"} 1+1.1x30
+eval instant at 50s sum by (method) (foo) > sum by (method) (bar)
+
+clear
+
+# vector binary op <
+  load 30s
+  foo{method="get", code="500"} 1+1x40
+  bar{method="get", code="404"} 1+1.1x30
+eval instant at 50s sum by (method) (foo) < sum by (method) (bar)
+
+clear
+
+# vector binary op >=
+  load 30s
+  foo{method="get", code="500"} 1+1x40
+  bar{method="get", code="404"} 1+1.1x30
+eval instant at 50s sum by (method) (foo) >= sum by (method) (bar)
+
+clear
+
+# vector binary op <=
+  load 30s
+  foo{method="get", code="500"} 1+1x40
+  bar{method="get", code="404"} 1+1.1x30
+eval instant at 50s sum by (method) (foo) <= sum by (method) (bar)
+
+clear
+
+# vector binary op ^
+  load 30s
+  foo{method="get", code="500"} 1+1x40
+  bar{method="get", code="404"} 1+1.1x30
+eval instant at 50s sum by (method) (foo) ^ sum by (method) (bar)
+
+clear
+
+# vector binary op %
+  load 30s
+  foo{method="get", code="500"} 1+2x40
+  bar{method="get", code="404"} 1+1x30
+eval instant at 50s sum by (method) (foo) % sum by (method) (bar)
+
+clear
+
+# vector binary op and 1
+  load 30s
+  foo{method="get", code="500"} 1+2x40
+  bar{method="get", code="404"} 1+1x30
+eval instant at 50s sum by (method) (foo) and sum by (method) (bar)
+
+clear
+
+# vector binary op and 2
+  load 30s
+  foo{method="get", code="500"} 1+2x40
+  bar{method="get", code="404"} 1+1x30
+eval instant at 50s sum by (code) (foo) and sum by (code) (bar)
+
+clear
+
+# vector binary op unless 1
+  load 30s
+  foo{method="get", code="500"} 1+2x40
+  bar{method="get", code="404"} 1+1x30
+eval instant at 50s sum by (method) (foo) unless sum by (method) (bar)
+
+clear
+
+# vector binary op unless 2
+  load 30s
+  foo{method="get", code="500"} 1+2x40
+  bar{method="get", code="404"} 1+1x30
+eval instant at 50s sum by (code) (foo) unless sum by (code) (bar)
+
+clear
+
+# vector binary op unless 3
+  load 30s
+  foo{method="get", code="500"} 1+2x40
+eval instant at 50s sum by (code) (foo) unless nonexistent
+
+clear
+
+# vector binary op or 1
+  load 30s
+  foo{A="1"} 1+1x40
+  foo{A="2"} 2+2x40
+eval instant at 50s sinh(foo or exp(foo))
+
+clear
+
+# vector binary op one-to-one left multiple matches
+  load 30s
+  foo{method="get", code="500"} 1
+  foo{method="get", code="200"} 1
+  bar{method="get", code="200"} 1
+eval instant at 50s foo / ignoring (code) bar
+
+clear
+
+# vector binary operation with many-to-many matching rhs high card
+  load 30s
+  foo{code="200", method="get"} 1+1x20
+  foo{code="200", method="post"} 1+1x20
+  bar{code="200", method="get"} 1+1x20
+  bar{code="200", method="post"} 1+1x20
+eval instant at 50s foo + on (code) group_right () bar
+
+clear
+
+# vector binary op > scalar
+  load 30s
+  foo{method="get", code="500"} 1+2x40
+  bar{method="get", code="404"} 1+1x30
+eval instant at 50s sum by (method) (foo) > 10
+
+clear
+
+# scalar < vector binary op
+  load 30s
+  foo{method="get", code="500"} 1+2x40
+  bar{method="get", code="404"} 1+1x30
+eval instant at 50s 10 < sum by (method) (foo)
+
+clear
+
+# scalar binary op == true
+eval instant at 50s 1 == bool 1
+
+# scalar binary op == false
+eval instant at 50s 1 != bool 2
+
+# scalar binary op !=
+eval instant at 50s 1 != bool 1
+
+# scalar binary op >
+eval instant at 50s 1 > bool 0
+
+# scalar binary op <
+eval instant at 50s 1 > bool 2
+
+# scalar binary op >=
+eval instant at 50s 1 >= bool 0
+
+# scalar binary op <=
+eval instant at 50s 1 <= bool 2
+
+# scalar binary op % 0
+eval instant at 50s 2 % 2
+
+# scalar binary op % 1
+eval instant at 50s 1 % 2
+
+# scalar binary op ^
+eval instant at 50s 2 ^ 2
+
+# empty series
+eval instant at 50s http_requests_total
+
+# empty series with func
+eval instant at 50s sum(http_requests_total)
+
+# empty result
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total{pod="nginx-3"}
+
+clear
+
+# last_over_time
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s last_over_time(http_requests_total[30s])
+
+clear
+
+# group
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s group(http_requests_total)
+
+clear
+
+# reset
+  load 30s
+  http_requests_total{pod="nginx-1"} 100-1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s resets(http_requests_total[5m])
+
+clear
+
+# present_over_time
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s present_over_time(http_requests_total[30s])
+
+clear
+
+# unary sub operation for scalar
+eval instant at 50s -(1 + 5)
+
+# unary sub operation for vector
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s -http_requests_total
+
+clear
+
+# unary add operation for vector
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s +http_requests_total
+
+clear
+
+# vector positive offset
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total offset 30s
+
+clear
+
+# vector negative offset
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total offset -30s
+
+clear
+
+# matrix negative offset with sum_over_time
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x25
+  http_requests_total{pod="nginx-2"} 1+2x28
+eval instant at 50s sum_over_time(http_requests_total[5m] offset 5m)
+
+clear
+
+# matrix negative offset with count_over_time
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s count_over_time(http_requests_total[5m] offset -2m)
+
+clear
+
+# @ vector time 10s
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total @ 10.000
+
+clear
+
+# @ vector time 120s
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total @ 120.000
+
+clear
+
+# @ vector time 360s
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total @ 360.000
+
+clear
+
+# @ vector start
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total @ start()
+
+clear
+
+# @ vector end
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total @ end()
+
+clear
+
+# count_over_time @ start
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s count_over_time(http_requests_total[5m] @ start())
+
+clear
+
+# sum_over_time @ end
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s sum_over_time(http_requests_total[5m] @ start())
+
+clear
+
+# avg_over_time @ 180s
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s avg_over_time(http_requests_total[4m] @ 180.000)
+
+clear
+
+# @ vector 240s offset 2m
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total @ 240.000 offset 2m
+
+clear
+
+# avg_over_time @ 120s offset -2m
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s http_requests_total @ 120.000 offset -2m
+
+clear
+
+# sum_over_time @ 180s offset 2m
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s sum_over_time(http_requests_total[5m] @ 180.000 offset 2m)
+
+clear
+
+# scalar with nested binary operator with step invariant
+  load 30s
+  http_requests_total{pod="nginx-1", route="/"} 53.33+56.00x40
+  http_requests_total{pod="nginx-2", route="/"} -26+2.00x40
+eval instant at 50s vector(scalar((http_requests_total @ end() offset 5m > http_requests_total)))
+
+clear
+
+# scalar func with non existent metric in scalar comparison
+eval instant at 50s scalar(non_existent_metric) < bool 0
+
+# scalar func with NaN
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s scalar(http_requests_total)
+
+clear
+
+# scalar func with aggr
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s scalar(max(http_requests_total))
+
+clear
+
+# scalar func with aggr and number on right
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s scalar(max(http_requests_total)) + 10
+
+clear
+
+# scalar func with aggr and number on left
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s 10 + scalar(max(http_requests_total))
+
+clear
+
+# clamp
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s clamp(http_requests_total, 5, 10)
+
+clear
+
+# clamp_min
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s clamp_min(http_requests_total, 10)
+
+clear
+
+# complex func query
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s clamp(1 - http_requests_total, 10 - 5, 10)
+
+clear
+
+# func within func query
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s clamp(irate(http_requests_total[30s]), 10 - 5, 10)
+
+clear
+
+# aggr within func query
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s clamp(rate(http_requests_total[30s]), 10 - 5, 10)
+
+clear
+
+# func with scalar arg that selects storage
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s clamp_min(http_requests_total, scalar(max(http_requests_total)))
+
+clear
+
+# func with scalar arg that selects storage + number
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x15
+  http_requests_total{pod="nginx-2"} 1+2x18
+eval instant at 50s clamp_min(http_requests_total, scalar(max(http_requests_total)) + 10)
+
+clear
+
+# sgn
+  load 30s
+  http_requests_total{pod="nginx-1", series="1"} 1+1.1x40
+  http_requests_total{pod="nginx-2", series="1"} -10+1x50
+  http_requests_total{pod="nginx-3", series="1"} NaN
+eval instant at 50s sgn(http_requests_total)
+
+clear
+
+# absent and series does not exist
+  load 30s
+eval instant at 50s absent(nonexistent{job="myjob"})
+
+clear
+
+# absent and series exists
+  load 30s
+  existent{job="myjob"} 1
+eval instant at 50s absent(existent{job="myjob"})
+
+clear
+
+# absent and regex matcher
+  load 30s
+eval instant at 50s absent(nonexistent{instance=~".*",job="myjob"})
+
+clear
+
+# absent and duplicate matchers
+  load 30s
+eval instant at 50s absent(nonexistent{foo="bar",job="myjob",job="yourjob"})
+
+clear
+
+# absent and nested function
+  load 30s
+eval instant at 50s absent(sum(nonexistent{job="myjob"}))
+
+clear
+
+# absent and nested absent with existing series
+  load 30s
+  existent{job="myjob"} 1
+eval instant at 50s absent(absent(existent{job="myjob"}))
+
+clear
+
+# absent_over_time with subquery - present data
+  load 30s
+  X{a="b"}  1x10
+eval instant at 50s absent_over_time(sum_over_time(X{a="b"}[1m])[1m:30s])
+
+clear
+
+# absent_over_time with subquery - missing data
+  load 30s
+  X{a="b"}  1x10
+eval instant at 50s absent_over_time(sum_over_time(X{a!="b"}[1m])[1m:30s])
+
+clear
+
+# absent_over_time with subquery and fixed offset
+  load 30s
+  http_requests_total{pod="nginx-1"} 1+1x10
+  http_requests_total{pod="nginx-2"} 1+2x10
+eval instant at 50s absent_over_time(http_requests_total @ start()[1h:1m])
+
+clear
+
+# absent_over_time fuzzer findings
+  load 30s
+  http_requests_total{pod="nginx-1", route="/"} 0.02+1.00x40
+  http_requests_total{pod="nginx-2", route="/"} -24+0.67x40
+eval instant at 50s count without (route, pod) ({__name__="http_requests_total"} @ 153.689)
+>
+  absent_over_time({__name__="http_requests_total",route="/"}[3m] offset 1m45s)
+
+clear
+
+# sort_by_label
+  load 30s
+  http_requests{job="api-server", instance="0", group="production"}	0+10x10
+  http_requests{job="api-server", instance="1", group="production"}	0+20x10
+  http_requests{job="api-server", instance="0", group="canary"}		0+30x10
+  http_requests{job="api-server", instance="1", group="canary"}		0+40x10
+  http_requests{job="api-server", instance="2", group="canary"}		NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN
+  http_requests{job="app-server", instance="0", group="production"}	0+50x10
+  http_requests{job="app-server", instance="1", group="production"}	0+60x10
+  http_requests{job="app-server", instance="0", group="canary"}		0+70x10
+  http_requests{job="app-server", instance="1", group="canary"}		0+80x10
+  http_requests{job="api-server", instance="2", group="production"}	0+10x10
+eval instant at 50s sort_by_label_desc(http_requests, "instance")
+
+clear
+
