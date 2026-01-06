@@ -43,47 +43,47 @@ func matchingEngineTime(e api.RemoteEngine, opts *query.Options) bool {
 }
 
 func (m PassthroughOptimizer) Optimize(plan Node, opts *query.Options) (Node, annotations.Annotations) {
-	engines := m.Endpoints.Engines()
-	if len(engines) == 1 {
-		if !matchingEngineTime(engines[0], opts) {
-			return plan, nil
-		}
-		return RemoteExecution{
-			Engine:          engines[0],
-			Query:           plan.Clone(),
-			QueryRangeStart: opts.Start,
-			QueryRangeEnd:   opts.End,
-		}, nil
-	}
-
+	engines := getRemoteEngines(m.Endpoints, plan, opts)
 	if len(engines) == 0 {
 		return plan, nil
 	}
 
-	matchingEngines := make(map[api.RemoteEngine]struct{})
+	var (
+		hasSelector         bool
+		matchingEngines     int
+		firstMatchingEngine api.RemoteEngine
+	)
 	TraverseBottomUp(nil, &plan, func(parent, current *Node) (stop bool) {
 		if vs, ok := (*current).(*VectorSelector); ok {
+			hasSelector = true
+
 			for _, e := range engines {
 				if !labelSetsMatch(vs.LabelMatchers, e.LabelSets()...) {
 					continue
 				}
-				matchingEngines[e] = struct{}{}
+				matchingEngines++
+				if matchingEngines > 1 {
+					return true
+				}
+				firstMatchingEngine = e
 			}
 		}
 		return false
 	})
 
-	if len(matchingEngines) == 1 {
-		for e := range matchingEngines {
-			if matchingEngineTime(e, opts) {
-				return RemoteExecution{
-					Engine:          e,
-					Query:           plan.Clone(),
-					QueryRangeStart: opts.Start,
-					QueryRangeEnd:   opts.End,
-				}, nil
-			}
-		}
+	// Fallback to all engines.
+	if !hasSelector && matchingEngines == 0 {
+		matchingEngines = len(engines)
+		firstMatchingEngine = engines[0]
+	}
+
+	if matchingEngines == 1 && matchingEngineTime(firstMatchingEngine, opts) {
+		return RemoteExecution{
+			Engine:          firstMatchingEngine,
+			Query:           plan.Clone(),
+			QueryRangeStart: opts.Start,
+			QueryRangeEnd:   opts.End,
+		}, nil
 	}
 
 	return plan, nil
