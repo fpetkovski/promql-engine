@@ -153,4 +153,29 @@ func TestPassthrough(t *testing.T) {
 		testutil.Equals(t, `{region="east"}`, renderExprTree(optimizedPlan.Root()))
 	})
 
+	t.Run("not optimized with subquery expression outside of bounds", func(t *testing.T) {
+		selectorExpr, err := parser.ParseExpr(`avg_over_time(rate(metric[1h])[1h:10m])`)
+		testutil.Ok(t, err)
+
+		engines := []api.RemoteEngine{
+			newEngineMock(0, time.Hour.Milliseconds(), []labels.Labels{labels.FromStrings("region", "east"), labels.FromStrings("region", "south")}),
+		}
+		optimizers := []Optimizer{PassthroughOptimizer{Endpoints: api.NewStaticEndpoints(engines)}}
+
+		// Engine range: [0s, 3600s]
+		// Query  range:            [3601s, 3602s]
+		var (
+			start = time.UnixMilli(3*time.Hour.Milliseconds() + time.Second.Milliseconds())
+			end   = start.Add(time.Second)
+		)
+		plan, _ := NewFromAST(selectorExpr, &query.Options{Start: start, End: end}, PlanOptions{})
+		optimizedPlan, _ := plan.Optimize(optimizers)
+
+		testutil.Equals(
+			t,
+			`avg_over_time(rate(metric[1h0m0s])[1h0m0s:10m0s])`,
+			renderExprTree(optimizedPlan.Root()),
+		)
+	})
+
 }
