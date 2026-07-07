@@ -58,21 +58,23 @@ One challenge with the streamed execution model is knowing how much memory to al
 To work around this issue, operators expose a `Series()` method which returns the labels for all time series that they will ever produce (for all `Next()` calls). Operators at the very bottom of the tree, like vector and matrix selectors, have this information since they are responsible for loading data from storage. Other operators can then call `Series()` on the downstream operator and pre-compute all possible outputs.
 
 Even though this might look like an expensive operation, its cost is identical to just one evaluation step. Knowing sizes of input and output vectors also allows us to:
-* allocate memory very precisely by properly sizing vector pools (see section below),
+* allocate output vectors very precisely by sizing them to the exact number of series (see section below),
 * use arrays instead of maps for indexing data, leading to faster execution times due to having less allocations and using index-based lookups, and
 * use tight loops in operators by eliminating conditional statements associated with maps.
 
-#### Vector pools
+Each series is assigned a dense, zero-based integer ID equal to its position in the slice returned by `Series()`. All downstream references to a series (aggregation grouping, binary-operation matching, deduplication) are then integer indices into pre-sized slices rather than label-set hashes and map lookups. When series from multiple shards or engines are merged, the local ID spaces are rebased into a single global space by adding a per-source offset, never by re-hashing labels.
 
-Since time series are decoded one step at a time, vectors between execution steps can be recycled manually instead of relying on the garbage collector. Each operator has its own pool that it uses to allocate new step vectors and send results to its upstream. Whenever the upstream operator is finished with processing a step vector, it will return that vector to the pool of its downstream so that it can be reused again for subsequent steps.
+#### Buffer recycling
+
+Since time series are decoded one step at a time, the memory backing step vectors can be recycled between execution steps instead of relying on the garbage collector. Rather than returning a freshly allocated slice, an operator's `Next()` method fills a buffer of step vectors that is owned and supplied by its caller, and returns how many were written. The caller reuses the same backing slabs across successive `Next()` calls; a step vector is recycled by truncating its slices to zero length while preserving their capacity. Output arrays are grown once to the exact expected series count via size hints, so a query reaches a steady state in which the hot loop performs essentially no allocation. Concurrent exchange operators additionally swap buffer ownership between producer and consumer without copying, returning emptied buffers for reuse.
 
 #### Memory limits
 
-There are currently no mechanisms to apply memory limits to queries within the engine. This is a highly desirable feature, and we would like to explore ways in which we can support it.
+Because samples are streamed one step batch at a time rather than fully materialized, peak memory is governed by the width of a step batch, not by the length of the query range. A query may additionally enforce a `MaxSamples` limit: an atomic sample tracker is incremented and decremented as samples enter and leave operators, and the query aborts with a "too many samples" error if the number of samples held in memory exceeds the limit.
 
 ### Concurrency control
 
-The current implementation uses goroutines very liberally which means the query will use as many cores as possible. Limiting the number of cores which a query can use is not yet implemented but we would eventually like to have support for it.
+The engine uses two orthogonal kinds of parallelism, both expressed through *exchange* operators that respect the same `Next()` interface as ordinary operators. *Inter-operator* (pipeline) parallelism is added by concurrent exchanges, which run a downstream operator in a background goroutine so that successive pipeline stages execute on different cores. *Intra-operator* (data) parallelism is added by fanning a selector out into several shards, each reading a disjoint hash partition of the matching series, and merging them with a coalesce exchange; this parallelizes chunk decoding across cores. The degree of intra-operator parallelism is controlled by the `DecodingConcurrency` option, which defaults to half of `GOMAXPROCS`.
 
 ### Plan optimization
 
