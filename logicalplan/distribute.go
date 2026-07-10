@@ -100,12 +100,13 @@ func (r RemoteExecution) Type() NodeType { return RemoteExecutionNode }
 
 func (r RemoteExecution) ReturnType() parser.ValueType { return r.Query.ReturnType() }
 
-// Deduplicate is a logical plan which deduplicates samples from multiple RemoteExecutions.
-type Deduplicate struct {
+// Coalesce is a logical plan which coalesces samples from multiple RemoteExecutions.
+type Coalesce struct {
 	Expressions RemoteExecutions
+	SkipDedup   bool
 }
 
-func (r Deduplicate) Children() []*Node {
+func (r Coalesce) Children() []*Node {
 	children := make([]*Node, len(r.Expressions))
 	for i := range r.Expressions {
 		var n Node = r.Expressions[i]
@@ -114,7 +115,7 @@ func (r Deduplicate) Children() []*Node {
 	return children
 }
 
-func (r Deduplicate) Clone() Node {
+func (r Coalesce) Clone() Node {
 	clone := r
 	clone.Expressions = make(RemoteExecutions, len(r.Expressions))
 	for i, e := range r.Expressions {
@@ -123,13 +124,16 @@ func (r Deduplicate) Clone() Node {
 	return clone
 }
 
-func (r Deduplicate) String() string {
+func (r Coalesce) String() string {
+	if r.SkipDedup {
+		return fmt.Sprintf("coalesce(%s)", r.Expressions.String())
+	}
 	return fmt.Sprintf("dedup(%s)", r.Expressions.String())
 }
 
-func (r Deduplicate) ReturnType() parser.ValueType { return r.Expressions[0].ReturnType() }
+func (r Coalesce) ReturnType() parser.ValueType { return r.Expressions[0].ReturnType() }
 
-func (r Deduplicate) Type() NodeType { return DeduplicateNode }
+func (r Coalesce) Type() NodeType { return DeduplicateNode }
 
 type Noop struct {
 	LeafNode
@@ -148,6 +152,7 @@ func (r Noop) Type() NodeType { return NoopNode }
 type DistributedExecutionOptimizer struct {
 	Endpoints          api.RemoteEndpoints
 	SkipBinaryPushdown bool
+	SkipDedup          bool
 }
 
 func (m DistributedExecutionOptimizer) Optimize(plan Node, opts *query.Options) (Node, annotations.Annotations) {
@@ -352,7 +357,7 @@ func newRemoteAggregation(rootAggregation *Aggregation, engines []api.RemoteEngi
 
 // distributeQuery takes a PromQL expression in the form of *parser.Expr and a set of remote engines.
 // For each engine which matches the time range of the query, it creates a RemoteExecution scoped to the range of the engine.
-// All remote executions are wrapped in a Deduplicate logical node to make sure that results from overlapping engines are deduplicated.
+// All remote executions are wrapped in a Coalesce logical node to make sure that results from overlapping engines are deduplicated.
 func (m DistributedExecutionOptimizer) distributeQuery(expr *Node, engines []api.RemoteEngine, opts *query.Options, labelRanges labelSetRanges) Node {
 	startOffset := calculateStartOffset(expr, opts.LookbackDelta)
 	allowedStartOffset := labelRanges.minOverlap(opts.Start.UnixMilli()-startOffset.Milliseconds(), opts.End.UnixMilli())
@@ -415,8 +420,9 @@ func (m DistributedExecutionOptimizer) distributeQuery(expr *Node, engines []api
 		return Noop{}
 	}
 
-	return Deduplicate{
+	return Coalesce{
 		Expressions: remoteQueries,
+		SkipDedup:   m.SkipDedup,
 	}
 }
 
@@ -696,10 +702,11 @@ func (m DistributedExecutionOptimizer) isDistributive(expr *Node, engineLabels m
 	if expr == nil {
 		return false
 	}
+	if containsDistributedNode(expr) {
+		return false
+	}
 
 	switch e := (*expr).(type) {
-	case Deduplicate, RemoteExecution:
-		return false
 	case *Binary:
 		if isBinaryExpressionWithOneScalarSide(e) {
 			return true
@@ -741,6 +748,20 @@ func (m DistributedExecutionOptimizer) isDistributive(expr *Node, engineLabels m
 	}
 
 	return true
+}
+
+func containsDistributedNode(expr *Node) bool {
+	var found bool
+	Traverse(expr, func(current *Node) {
+		if found {
+			return
+		}
+		switch (*current).Type() {
+		case RemoteExecutionNode, DeduplicateNode:
+			found = true
+		}
+	})
+	return found
 }
 
 func isBinaryExpressionWithOneScalarSide(expr *Binary) bool {
