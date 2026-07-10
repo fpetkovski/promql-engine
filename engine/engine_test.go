@@ -5998,6 +5998,10 @@ histogram_sum(
 			query: `histogram_stddev(native_histogram_series)`,
 		},
 		{
+			name:  "histogram_count over histogram_stddev product",
+			query: `histogram_count(histogram_stddev(native_histogram_series) * native_histogram_series)`,
+		},
+		{
 			name:  "lhs multiplication",
 			query: `native_histogram_series * 3`,
 		},
