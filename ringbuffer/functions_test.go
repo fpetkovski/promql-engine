@@ -113,23 +113,59 @@ func TestExtendedRateHistogramSingleSample(t *testing.T) {
 }
 
 // TestExtendedRateHistogramMixed verifies that a range mixing a histogram and a
-// float yields no sample instead of a bogus float zero, and warns.
+// float yields no sample instead of a bogus float zero, and warns. Both
+// orderings must behave identically: the histogram-first case is caught inside
+// histogramRate, while the float-first case is caught by the top-level mixed
+// guard. Without that guard, float-first would fall into the float branch and
+// read .V.F (== 0) from the histogram sample, emitting a silent bogus zero.
 func TestExtendedRateHistogramMixed(t *testing.T) {
 	const (
 		selectRange = int64(300000)
 		stepTime    = int64(300000)
 		offset      = int64(0)
 	)
-	samples := []Sample{
-		{T: 0, V: Value{H: newTestHistogram(1)}},
-		{T: 300000, V: Value{F: 5}},
+
+	orderings := []struct {
+		name    string
+		samples []Sample
+	}{
+		{
+			name: "histogram then float",
+			samples: []Sample{
+				{T: 0, V: Value{H: newTestHistogram(1)}},
+				{T: 300000, V: Value{F: 5}},
+			},
+		},
+		{
+			name: "float then histogram",
+			samples: []Sample{
+				{T: 0, V: Value{F: 5}},
+				{T: 300000, V: Value{H: newTestHistogram(1)}},
+			},
+		},
 	}
 
-	_, h, ok, warn, err := extendedRate(samples, true, false, stepTime, selectRange, offset, 0)
-	require.NoError(t, err)
-	require.False(t, ok, "a mixed float/histogram range must not emit a sample")
-	require.Nil(t, h)
-	require.NotZero(t, warn&warnings.WarnMixedFloatsHistograms)
+	funcs := []struct {
+		name              string
+		isCounter, isRate bool
+	}{
+		{"xincrease", true, false},
+		{"xrate", true, true},
+		{"xdelta", false, false},
+	}
+
+	for _, tc := range orderings {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, fn := range funcs {
+				f, h, ok, warn, err := extendedRate(tc.samples, fn.isCounter, fn.isRate, stepTime, selectRange, offset, 0)
+				require.NoError(t, err, fn.name)
+				require.False(t, ok, "%s: a mixed float/histogram range must not emit a sample", fn.name)
+				require.Nil(t, h, fn.name)
+				require.Zero(t, f, fn.name)
+				require.NotZero(t, warn&warnings.WarnMixedFloatsHistograms, "%s: a mixed range must warn", fn.name)
+			}
+		})
+	}
 }
 
 // TestExtendedRateHistogramCases exercises the windowing branches of the

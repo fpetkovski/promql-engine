@@ -559,6 +559,20 @@ func extendedRate(samples []Sample, isCounter, isRate bool, stepTime int64, sele
 		resultValue float64
 	)
 
+	// A range mixing float and histogram samples has no meaningful extended
+	// rate, so bail out early for parity with extrapolatedRate. Without this
+	// guard a float-first range would fall into the float branch below and read
+	// .V.F (== 0) from the histogram samples, emitting a bogus zero float with
+	// no warning and inconsistently with rate/increase/delta on identical input.
+	var fd, hd bool
+	for _, s := range samples {
+		hd = hd || s.V.H != nil
+		fd = fd || s.V.H == nil
+	}
+	if fd && hd {
+		return 0, nil, false, warnings.WarnMixedFloatsHistograms, nil
+	}
+
 	// Of the extended functions only xincrease is a non-rate counter; xrate and
 	// xdelta take the windowing and adjust-to-range branches.
 	isXIncrease := isCounter && !isRate

@@ -2900,6 +2900,79 @@ func TestXIncreaseNativeHistogramPreRangeBaseline(t *testing.T) {
 	require.InEpsilon(t, 40.0, vec[0].F, 1e-9)
 }
 
+// TestXFunctionsFloatToHistogramTransition pins the behaviour of a range that
+// spans a float->native-histogram migration: xincrease/xrate/xdelta must agree
+// with their non-extended counterparts and emit no bogus float sample for a
+// mixed range.
+func TestXFunctionsFloatToHistogramTransition(t *testing.T) {
+	opts := promql.EngineOpts{
+		Timeout:              1 * time.Hour,
+		MaxSamples:           1e10,
+		EnableNegativeOffset: true,
+		EnableAtModifier:     true,
+	}
+
+	mkHist := func(mult float64) *histogram.FloatHistogram {
+		return &histogram.FloatHistogram{
+			Schema:          0,
+			ZeroThreshold:   0.001,
+			ZeroCount:       mult,
+			Count:           10 * mult,
+			Sum:             20 * mult,
+			PositiveSpans:   []histogram.Span{{Offset: 0, Length: 2}},
+			PositiveBuckets: []float64{4 * mult, 5 * mult},
+		}
+	}
+
+	lStorage := teststorage.New(t)
+	defer lStorage.Close()
+
+	app := lStorage.Appender(context.TODO())
+	for _, sec := range []int64{10, 40} {
+		_, err := app.Append(0, labels.FromStrings(labels.MetricName, "h"), time.Unix(sec, 0).UnixMilli(), float64(sec))
+		testutil.Ok(t, err)
+	}
+	for i, sec := range []int64{70, 100} {
+		_, err := app.AppendHistogram(0, labels.FromStrings(labels.MetricName, "h"), time.Unix(sec, 0).UnixMilli(), nil, mkHist(float64(i+1)))
+		testutil.Ok(t, err)
+	}
+	testutil.Ok(t, app.Commit())
+
+	newEngine := engine.New(engine.Opts{
+		EngineOpts:        opts,
+		LogicalOptimizers: logicalplan.AllOptimizers,
+		EnableXFunctions:  true,
+	})
+	ctx := context.Background()
+
+	// The range [105s] at 105s spans both the float samples (10s, 40s) and the
+	// histogram samples (70s, 100s), so the buffer holds a mix of both types.
+	for _, fns := range [][2]string{{"xincrease", "increase"}, {"xrate", "rate"}, {"xdelta", "delta"}} {
+		xfn, fn := fns[0], fns[1]
+
+		xq, err := newEngine.NewInstantQuery(ctx, lStorage, nil, xfn+"(h[105s])", time.Unix(105, 0))
+		testutil.Ok(t, err)
+		xres := xq.Exec(ctx)
+		testutil.Ok(t, xres.Err)
+		xvec, err := xres.Vector()
+		testutil.Ok(t, err)
+		xq.Close()
+
+		q, err := newEngine.NewInstantQuery(ctx, lStorage, nil, fn+"(h[105s])", time.Unix(105, 0))
+		testutil.Ok(t, err)
+		res := q.Exec(ctx)
+		testutil.Ok(t, res.Err)
+		vec, err := res.Vector()
+		testutil.Ok(t, err)
+		q.Close()
+
+		require.Equal(t, len(vec), len(xvec), "%s and %s must agree for a mixed float/histogram range", xfn, fn)
+		for _, s := range xvec {
+			require.NotNil(t, s.H, "%s must not emit a float sample for a mixed range", xfn)
+		}
+	}
+}
+
 func TestXFunctions(t *testing.T) {
 	defaultQueryTime := time.Unix(50, 0)
 	// Negative offset and at modifier are enabled by default
