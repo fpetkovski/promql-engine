@@ -2743,9 +2743,8 @@ func TestXFunctionsRangeQuery(t *testing.T) {
 }
 
 func TestXFunctionsWithNativeHistograms(t *testing.T) {
-	defaultQueryTime := time.Unix(50, 0)
-
-	expr := "sum(xincrease(native_histogram_series[50s]))"
+	queryTime := time.Unix(600, 0)
+	rangeSeconds := 300.0
 
 	// Negative offset and at modifier are enabled by default
 	// since Prometheus v2.33.0, so we also enable them.
@@ -2760,23 +2759,145 @@ func TestXFunctionsWithNativeHistograms(t *testing.T) {
 	defer lStorage.Close()
 
 	app := lStorage.Appender(context.TODO())
-	testutil.Ok(t, generateFloatHistogramSeries(app, 3000, false))
+	testutil.Ok(t, generateFloatHistogramSeries(app, 300, false))
 	testutil.Ok(t, app.Commit())
-
-	optimizers := logicalplan.AllOptimizers
 
 	ctx := context.Background()
 	newEngine := engine.New(engine.Opts{
 		EngineOpts:        opts,
-		LogicalOptimizers: optimizers,
+		LogicalOptimizers: logicalplan.AllOptimizers,
 		EnableXFunctions:  true,
 	})
-	query, err := newEngine.NewInstantQuery(ctx, lStorage, nil, expr, defaultQueryTime)
-	testutil.Ok(t, err)
-	defer query.Close()
 
-	engineResult := query.Exec(ctx)
-	require.Error(t, engineResult.Err)
+	exec := func(t *testing.T, query string) promql.Vector {
+		t.Helper()
+		q, err := newEngine.NewInstantQuery(ctx, lStorage, nil, query, queryTime)
+		testutil.Ok(t, err)
+		defer q.Close()
+		res := q.Exec(ctx)
+		testutil.Ok(t, res.Err)
+		vec, err := res.Vector()
+		testutil.Ok(t, err)
+		return vec
+	}
+
+	// xincrease/xrate/xdelta on native histograms must no longer be rejected and
+	// must return histograms (not floats).
+	for _, fn := range []string{"xincrease", "xrate", "xdelta"} {
+		vec := exec(t, fn+"(native_histogram_series[300s])")
+		testutil.Assert(t, len(vec) > 0, "expected %s to produce results", fn)
+		for _, s := range vec {
+			testutil.Assert(t, s.H != nil, "%s on a native histogram must return a histogram", fn)
+			testutil.Assert(t, s.F == 0, "%s on a native histogram must not return a float", fn)
+		}
+	}
+
+	// Per-second relationship: xrate == xincrease / rangeSeconds. Extract the
+	// aggregated histogram's Sum via histogram_sum so we compare scalars.
+	xincSum := exec(t, "histogram_sum(sum(xincrease(native_histogram_series[300s])))")[0].F
+	xrateSum := exec(t, "histogram_sum(sum(xrate(native_histogram_series[300s])))")[0].F
+	require.NotZero(t, xrateSum)
+	require.InEpsilon(t, xincSum/rangeSeconds, xrateSum, 1e-9)
+	// Regression guard for the original bug, where xrate returned the same
+	// (undivided) histogram as xincrease.
+	require.Greater(t, xincSum/xrateSum, 100.0, "xrate must be divided by the range, not equal to xincrease")
+}
+
+// TestXFunctionsNativeHistogramsRangeQuery exercises the multi-step plumbing
+// (buffer ext-lookback retention, lastSample carry-over, and the histogram
+// ReadIntoLast branch in the matrix selector) that the instant-only test skips.
+func TestXFunctionsNativeHistogramsRangeQuery(t *testing.T) {
+	opts := promql.EngineOpts{
+		Timeout:              1 * time.Hour,
+		MaxSamples:           1e10,
+		EnableNegativeOffset: true,
+		EnableAtModifier:     true,
+	}
+
+	lStorage := teststorage.New(t)
+	defer lStorage.Close()
+
+	app := lStorage.Appender(context.TODO())
+	testutil.Ok(t, generateFloatHistogramSeries(app, 100, false))
+	testutil.Ok(t, app.Commit())
+
+	newEngine := engine.New(engine.Opts{
+		EngineOpts:        opts,
+		LogicalOptimizers: logicalplan.AllOptimizers,
+		EnableXFunctions:  true,
+	})
+	ctx := context.Background()
+
+	for _, fn := range []string{"xincrease", "xrate", "xdelta"} {
+		q, err := newEngine.NewRangeQuery(ctx, lStorage, nil, fn+"(native_histogram_series[60s])", time.Unix(300, 0), time.Unix(600, 0), 30*time.Second)
+		testutil.Ok(t, err)
+		res := q.Exec(ctx)
+		testutil.Ok(t, res.Err)
+		m, err := res.Matrix()
+		testutil.Ok(t, err)
+		q.Close()
+
+		testutil.Assert(t, len(m) > 0, "expected %s to produce series", fn)
+		for _, s := range m {
+			testutil.Assert(t, len(s.Histograms) > 1, "expected %s to produce histogram points across steps", fn)
+			testutil.Assert(t, len(s.Floats) == 0, "%s must not emit float points for a native histogram", fn)
+		}
+	}
+}
+
+// TestXIncreaseNativeHistogramPreRangeBaseline pins the extended-lookback
+// baseline: the last histogram sample strictly before the range start must be
+// used (parity with the float path). With a range whose start falls between two
+// samples, dropping that pre-range point would under-count the leading edge.
+func TestXIncreaseNativeHistogramPreRangeBaseline(t *testing.T) {
+	opts := promql.EngineOpts{
+		Timeout:              1 * time.Hour,
+		MaxSamples:           1e10,
+		EnableNegativeOffset: true,
+		EnableAtModifier:     true,
+	}
+
+	mkHist := func(mult float64) *histogram.FloatHistogram {
+		return &histogram.FloatHistogram{
+			Schema:          0,
+			ZeroThreshold:   0.001,
+			ZeroCount:       mult,
+			Count:           10 * mult,
+			Sum:             20 * mult,
+			PositiveSpans:   []histogram.Span{{Offset: 0, Length: 2}},
+			PositiveBuckets: []float64{4 * mult, 5 * mult},
+		}
+	}
+
+	lStorage := teststorage.New(t)
+	defer lStorage.Close()
+
+	app := lStorage.Appender(context.TODO())
+	for i, sec := range []int64{0, 30, 60, 90} {
+		_, err := app.AppendHistogram(0, labels.FromStrings(labels.MetricName, "h"), time.Unix(sec, 0).UnixMilli(), nil, mkHist(float64(i+1)))
+		testutil.Ok(t, err)
+	}
+	testutil.Ok(t, app.Commit())
+
+	newEngine := engine.New(engine.Opts{
+		EngineOpts:        opts,
+		LogicalOptimizers: logicalplan.AllOptimizers,
+		EnableXFunctions:  true,
+	})
+	ctx := context.Background()
+
+	// Instant query at 95s over [55s]: rangeStart=40s falls between the samples
+	// at 30s (baseline) and 60s. The increase must span 30s->90s (Sum 80-40=40),
+	// not 60s->90s (Sum 80-60=20).
+	q, err := newEngine.NewInstantQuery(ctx, lStorage, nil, "histogram_sum(xincrease(h[55s]))", time.Unix(95, 0))
+	testutil.Ok(t, err)
+	defer q.Close()
+	res := q.Exec(ctx)
+	testutil.Ok(t, res.Err)
+	vec, err := res.Vector()
+	testutil.Ok(t, err)
+	require.Len(t, vec, 1)
+	require.InEpsilon(t, 40.0, vec[0].F, 1e-9)
 }
 
 func TestXFunctions(t *testing.T) {

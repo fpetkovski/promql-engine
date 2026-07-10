@@ -399,13 +399,13 @@ func (m *matrixScanner) selectPoints(
 	for valType := m.iterator.Next(); valType != chunkenc.ValNone; valType = m.iterator.Next() {
 		switch valType {
 		case chunkenc.ValHistogram, chunkenc.ValFloatHistogram:
-			if isExtFunction {
-				return ErrNativeHistogramsNotSupported
-			}
 			var t int64
 			t, fh = m.iterator.AtFloatHistogram(fh)
-			if value.IsStaleNaN(fh.Sum) || t < mint {
+			if value.IsStaleNaN(fh.Sum) {
 				continue
+			}
+			if m.metricAppearedTs == math.MinInt64 {
+				m.metricAppearedTs = t
 			}
 			if t > maxt {
 				m.lastSample.T = t
@@ -414,10 +414,28 @@ func (m *matrixScanner) selectPoints(
 				} else {
 					fh.CopyTo(m.lastSample.V.H)
 				}
+				m.lastSample.V.F = 0
 				return nil
 			}
-			if t > mint {
-				m.buffer.Push(t, ringbuffer.Value{H: fh})
+			if isExtFunction {
+				if t > mint || !appendedPointBeforeMint {
+					m.buffer.Push(t, ringbuffer.Value{H: fh})
+					appendedPointBeforeMint = true
+				} else {
+					m.buffer.ReadIntoLast(func(s *ringbuffer.Sample) {
+						s.T = t
+						if s.V.H == nil {
+							s.V.H = fh.Copy()
+						} else {
+							fh.CopyTo(s.V.H)
+						}
+						s.V.F = 0
+					})
+				}
+			} else {
+				if t > mint {
+					m.buffer.Push(t, ringbuffer.Value{H: fh})
+				}
 			}
 		case chunkenc.ValFloat:
 			t, v := m.iterator.At()
