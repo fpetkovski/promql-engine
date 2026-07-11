@@ -729,25 +729,31 @@ count by (cluster) (
 	}
 	for _, tcase := range cases {
 		t.Run(tcase.name, func(t *testing.T) {
+			runTest := func(optimizers []Optimizer) {
+				expr, err := parser.ParseExpr(tcase.expr)
+				testutil.Ok(t, err)
+
+				plan, _ := NewFromAST(expr, &query.Options{Start: time.Unix(0, 0), End: time.Unix(0, 0)}, PlanOptions{})
+				optimizedPlan, warns := plan.Optimize(optimizers)
+				expectedPlan := cleanUp(replacements, tcase.expected)
+				testutil.Equals(t, expectedPlan, optimizedPlan.Root().String())
+				if tcase.expectWarn {
+					testutil.Assert(t, len(warns) > 0, "expected warnings, got none")
+				} else {
+					testutil.Assert(t, len(warns) == 0, "expected no warnings, got some")
+				}
+			}
+
 			optimizers := []Optimizer{
 				DistributedExecutionOptimizer{
 					Endpoints:          api.NewStaticEndpoints(engines),
 					SkipBinaryPushdown: tcase.skipBinopPushdown,
 				},
 			}
+			runTest(optimizers)
 
-			expr, err := parser.ParseExpr(tcase.expr)
-			testutil.Ok(t, err)
-
-			plan, _ := NewFromAST(expr, &query.Options{Start: time.Unix(0, 0), End: time.Unix(0, 0)}, PlanOptions{})
-			optimizedPlan, warns := plan.Optimize(optimizers)
-			expectedPlan := cleanUp(replacements, tcase.expected)
-			testutil.Equals(t, expectedPlan, optimizedPlan.Root().String())
-			if tcase.expectWarn {
-				testutil.Assert(t, len(warns) > 0, "expected warnings, got none")
-			} else {
-				testutil.Assert(t, len(warns) == 0, "expected no warnings, got some")
-			}
+			chainedOptimizers := append(append([]Optimizer{}, optimizers...), optimizers...)
+			runTest(chainedOptimizers)
 		})
 	}
 }

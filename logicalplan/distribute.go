@@ -241,6 +241,13 @@ func (m DistributedExecutionOptimizer) computeDistributionPoints(plan *Node, par
 
 	// First pass: mark distribution points (aggregations, absent functions).
 	Traverse(plan, func(current *Node) {
+		// Skip subtrees that are already distributed (e.g. by a previous
+		// distributed optimizer). This lets multiple distributed optimizers
+		// be chained: once the plan is distributed, subsequent optimizers
+		// fall through instead of re-distributing.
+		if isDistributed(current) {
+			return
+		}
 		if isAbsent(current) {
 			if m.isDistributive(current, engineLabels, warns) {
 				marks[current] = struct{}{}
@@ -273,6 +280,9 @@ func (m DistributedExecutionOptimizer) computeDistributionPoints(plan *Node, par
 		if _, ok := marks[current]; ok {
 			return
 		}
+		if isDistributed(current) {
+			return
+		}
 		if subtreeHasMark(current, marks) {
 			return
 		}
@@ -289,6 +299,23 @@ func (m DistributedExecutionOptimizer) computeDistributionPoints(plan *Node, par
 	})
 
 	return marks
+}
+
+// isDistributed reports whether the subtree rooted at node has already been
+// processed by a distributed optimizer, i.e. it contains a Deduplicate,
+// RemoteExecution or Noop node (Noop is the terminal result of distributing a
+// subtree that matched no engines). Such subtrees must not be distributed again.
+func isDistributed(node *Node) bool {
+	switch (*node).(type) {
+	case Deduplicate, RemoteExecution, Noop:
+		return true
+	}
+	for _, child := range (*node).Children() {
+		if isDistributed(child) {
+			return true
+		}
+	}
+	return false
 }
 
 func subtreeHasMark(node *Node, marks map[*Node]struct{}) bool {
