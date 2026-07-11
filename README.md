@@ -21,6 +21,8 @@ The following table shows operations which are currently supported by the engine
 
 ## Design
 
+> For a deeper, end-to-end description of the engine's design — execution model, series identity and memory management, range evaluation, parallelism, plan optimization, and distributed execution — see the [architecture note](./docs/architecture.md).
+
 At the beginning of a PromQL query execution, the query engine computes a physical plan consisting of multiple independent operators, each responsible for calculating one part of the query expression.
 
 Operators are assembled in a tree-like structure with every operator calling `Next()` on its dependents until there is no more data to be returned. The result of the `Next()` function is a *column vector* (also called a *step vector*) with elements in the vector representing samples with the same timestamp from different time series.
