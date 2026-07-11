@@ -81,6 +81,13 @@ of samples shrinks monotonically as data flows from the selectors toward the
 root. The engine therefore decodes and holds samples one step (or one small
 batch of steps) at a time instead of expanding whole series into memory.
 
+<p align="center">
+  <img src="./assets/design.png"/>
+  <br/><sub><b>Figure 1.</b> The operator tree. Each operator pulls step vectors
+  from its children through <code>Next</code>; because most expressions
+  aggregate, samples are reduced as they flow left to right toward the root.</sub>
+</p>
+
 Operators fall into a handful of families: *selectors* (instant-vector and
 range/matrix, plus scalar-literal and subquery), *aggregations*
 (`sum`/`min`/`max`/`avg`/`count`/… and the heap-based `topk`/`bottomk`/`limitk`
@@ -221,15 +228,29 @@ deduplication, remote calls, each scan shard) lets each stage of the pipeline
 run on its own core, so an operator can begin work on step *n* while its child
 computes step *n+1*.
 
+<p align="center">
+  <img src="./assets/promql-pipeline.png"/>
+  <br/><sub><b>Figure 2.</b> Inter-operator parallelism. A concurrent exchange
+  runs a child operator in a background goroutine, so successive pipeline stages
+  execute on different cores.</sub>
+</p>
+
 **Intra-operator (data) parallelism.** Selectors are fanned out into several
-shards, each reading a disjoint hash partition of the matching series, each
-wrapped in its own concurrent exchange, and merged by a *coalesce* exchange. The
-coalesce operator concatenates the shards' series spaces (rebasing identifiers
-by a per-shard offset) and aligns their outputs on a common timestamp. This
+shards, each decoding a disjoint partition of the matching series, wrapped in its
+own concurrent exchange, and merged by a *coalesce* exchange. The coalesce
+operator concatenates the shards' series spaces (rebasing identifiers by a
+per-shard offset) and aligns their outputs on a common timestamp. This
 parallelizes the most expensive part of many queries — decoding chunks from
 storage — across cores. A *deduplicate* exchange plays a similar merging role
 when the same series arrives from replicated sources, keeping the freshest
 sample.
+
+<p align="center">
+  <img src="./assets/parallel-coalesce.png"/>
+  <br/><sub><b>Figure 3.</b> Intra-operator parallelism. A selector is fanned
+  into shards that each decode a disjoint partition of the series, merged by a
+  coalesce exchange that rebases per-shard identifiers into one space.</sub>
+</p>
 
 ## 6. Query planning and optimization
 
@@ -299,6 +320,8 @@ have been dropped. Because projection changes what a select returns, it also
 participates in the selector-pool cache key, so two selectors are only shared
 when their projections agree.
 
+### 6.2 Extensibility
+
 The engine is extensible along two seams. Callers may inject custom optimizers
 at construction. And a logical node may implement `MakeExecutionOperator`,
 letting external code splice an entirely custom physical operator into the tree
@@ -321,7 +344,7 @@ The rewrite turns a central aggregation into a fan-out of remote sub-aggregation
 and one local aggregation. For example, with two remote engines,
 
 ```
-sum(rate(http_request_total[4m]))
+sum(rate(http_requests_total[4m]))
 ```
 
 becomes
@@ -329,18 +352,48 @@ becomes
 ```
 sum(
   dedup(
-    sum(rate(http_request_total[4m])),   # remote engine 1
-    sum(rate(http_request_total[4m])),   # remote engine 2
+    sum(rate(http_requests_total[4m])),   # remote engine 1
+    sum(rate(http_requests_total[4m])),   # remote engine 2
   )
 )
 ```
 
-The optimizer decides *where* to distribute by marking the highest nodes that
-can be pushed down, and *whether* a node may be pushed down by its algebraic
-properties:
+### 7.1 Choosing the distribution point
+
+For each subtree the rewrite must pick the single node at which to split remote
+from local work. Placing that boundary too low is safe but wasteful: it ships too
+small a subtree to each engine and leaves most of the reduction to run centrally.
+Placing it too high is *incorrect*, because an engine would then compute a partial
+result that overlaps another engine's dataset, and the two could not be combined
+by a simple concatenation.
+
+The boundary is found by tracking the query's **partition labels** through the
+expression tree. The partition labels are advertised label names that uniquely
+identify a disjoint dataset (for example `region` or `datacenter`). An operator
+*preserves* the partition labels if its output series still carry them; when it
+does, the partials produced by different engines are guaranteed to occupy a
+disjoint label space and can be merged by plain concatenation, with no central
+recombination. The optimizer therefore pushes distribution to the **highest node
+reachable through an unbroken chain of distributive operators along which the
+partition labels survive**. Read from the root downward, that boundary is the
+first node which either *drops* the partition labels or is not itself
+distributive: everything below it is shipped whole to every engine, and that node
+together with its ancestors becomes the local merge.
+
+This label-tracking rule generalizes the engine's original strategy, which
+simply distributed the *lowest* aggregations in the tree. That was correct but
+conservative. Tracking partition labels lets the optimizer push a whole
+`topk(10, sum by (region, instance) (X))` to each engine — because the inner
+`sum by (region, …)` retains the partition label `region`, each engine's top-10
+is taken over a disjoint set of series and the global top-10 is just the
+concatenation of the per-engine results.
+
+### 7.2 Which nodes are distributive
+
+Whether a node *may* be pushed down at all is a separate, algebraic question:
 
 - Aggregations that are naturally distributive (`sum`, `min`, `max`, `count`,
-  `group`, `topk`, `bottomk`) are split into a remote aggregation feeding a
+  `group`, `topk`, `bottomk`, …) are split into a remote aggregation feeding a
   local one (with `count` becoming a local `sum`).
 - Aggregations that are *not* distributive (`avg`, `quantile`, `stddev`, …) can
   still be pushed *whole* when they preserve the partition labels that shard the
@@ -351,6 +404,8 @@ properties:
 - `absent`/`absent_over_time` are distributed as a product of per-engine
   results, with one engine guaranteed to evaluate the expression so an
   all-missing result still yields `absent`.
+
+### 7.3 Fan-out and time alignment
 
 Remote fragments are cloned per matching engine, filtered to those whose
 external labels and time range overlap the query, and merged by a deduplicate
