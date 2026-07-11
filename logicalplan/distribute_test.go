@@ -752,6 +752,8 @@ count by (cluster) (
 			}
 			runTest(optimizers)
 
+			// Make sure DistributedExecutionOptimizer is idempotent and does not rewrite
+			// already distributed queries.
 			chainedOptimizers := append(append([]Optimizer{}, optimizers...), optimizers...)
 			runTest(chainedOptimizers)
 		})
