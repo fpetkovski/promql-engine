@@ -69,8 +69,10 @@ type matrixSelector struct {
 	shard     int
 	numShards int
 
-	// Lookback delta for extended range functions.
-	extLookbackDelta int64
+	// Effective ext-lookback window for extended range functions: the maximum
+	// age (relative to the range start) of a valid pre-range baseline. Shared by
+	// the ring buffer and selectPoints so both classify baselines identically.
+	extLookback int64
 
 	nonCounterMetric string
 	hasFloats        bool
@@ -118,7 +120,7 @@ func NewMatrixSelector(
 		shard:     shard,
 		numShards: numShard,
 
-		extLookbackDelta: opts.ExtLookbackDelta.Milliseconds(),
+		extLookback: opts.ExtLookbackDelta.Milliseconds() - 1,
 	}
 
 	// For instant queries, set the step to a positive value
@@ -194,7 +196,7 @@ func (o *matrixSelector) Next(ctx context.Context, buf []model.StepVector) (int,
 			maxt := seriesTs - o.offset
 			mint := maxt - o.selectRange
 
-			if err := scanner.selectPoints(mint, maxt, seriesTs, o.fhReader, o.isExtFunction); err != nil {
+			if err := scanner.selectPoints(mint, maxt, seriesTs, o.fhReader, o.isExtFunction, o.extLookback); err != nil {
 				return 0, err
 			}
 			// TODO(saswatamcode): Handle multi-arg functions for matrixSelectors.
@@ -352,7 +354,7 @@ func (o *matrixSelector) newBuffer(ctx context.Context) ringbuffer.Buffer {
 	}
 
 	if o.isExtFunction {
-		return ringbuffer.NewWithExtLookback(ctx, 8, o.selectRange, o.offset, o.opts.ExtLookbackDelta.Milliseconds()-1, o.call)
+		return ringbuffer.NewWithExtLookback(ctx, 8, o.selectRange, o.offset, o.extLookback, o.call)
 	}
 	return ringbuffer.New(ctx, 8, o.selectRange, o.offset, o.call)
 
@@ -379,20 +381,64 @@ func (m *matrixScanner) selectPoints(
 	mint, maxt, evalt int64,
 	fh *histogram.FloatHistogram,
 	isExtFunction bool,
+	extLookback int64,
 ) error {
 	m.buffer.Reset(mint, evalt)
 	if m.lastSample.T > maxt {
 		return nil
 	}
 
+	// rangeStart is the semantic range boundary (samples at t <= rangeStart are
+	// the pre-range baseline, t > rangeStart are in-window). mint below is then
+	// bumped to the iterator resume cursor (buffer.MaxT()+1) so already-buffered
+	// points are not re-read; it must NOT be used to classify baseline vs
+	// in-window, or an in-window point retained by Reset gets misclassified.
+	rangeStart := mint
 	if bufMaxt := m.buffer.MaxT() + 1; bufMaxt > mint {
 		mint = bufMaxt
 	}
 	mint = max(mint, m.buffer.MaxT()+1)
-	if m.lastSample.T > mint {
-		m.buffer.Push(m.lastSample.T, m.lastSample.V)
-		m.lastSample.T = math.MinInt64
-		mint = max(mint, m.buffer.MaxT()+1)
+	if m.lastSample.T != math.MinInt64 {
+		// The prefetched sample (first point past the previous maxt) must be
+		// reincorporated with the same boundary rule as Reset and the iterator
+		// loop. A strict t > cursor check here would drop a baseline landing on
+		// rangeStart, making results depend on prefetch vs iterator ordering.
+		if isExtFunction {
+			switch {
+			case m.lastSample.T > rangeStart:
+				// In-window: always newer than every buffered point, so append.
+				m.buffer.Push(m.lastSample.T, m.lastSample.V)
+			case ringbuffer.Empty(m.buffer):
+				// Sole baseline candidate. Reset drops points older than
+				// extLookback, so mirror that here or a step gap larger than the
+				// lookback would resurrect a stale sample as the baseline.
+				if rangeStart-m.lastSample.T <= extLookback {
+					m.buffer.Push(m.lastSample.T, m.lastSample.V)
+				}
+			default:
+				// Baseline: newer than the point retained by Reset (which, since
+				// lastSample.T <= rangeStart, is the only buffered point), replace it.
+				m.buffer.ReadIntoLast(func(s *ringbuffer.Sample) {
+					s.T = m.lastSample.T
+					s.V.F = m.lastSample.V.F
+					if m.lastSample.V.H != nil {
+						if s.V.H == nil {
+							s.V.H = m.lastSample.V.H.Copy()
+						} else {
+							m.lastSample.V.H.CopyTo(s.V.H)
+						}
+					} else {
+						s.V.H = nil
+					}
+				})
+			}
+			m.lastSample.T = math.MinInt64
+			mint = max(mint, m.buffer.MaxT()+1)
+		} else if m.lastSample.T > mint {
+			m.buffer.Push(m.lastSample.T, m.lastSample.V)
+			m.lastSample.T = math.MinInt64
+			mint = max(mint, m.buffer.MaxT()+1)
+		}
 	}
 
 	appendedPointBeforeMint := !ringbuffer.Empty(m.buffer)
@@ -418,10 +464,16 @@ func (m *matrixScanner) selectPoints(
 				return nil
 			}
 			if isExtFunction {
-				if t > mint || !appendedPointBeforeMint {
+				switch {
+				case t > rangeStart:
 					m.buffer.Push(t, ringbuffer.Value{H: fh})
 					appendedPointBeforeMint = true
-				} else {
+				case rangeStart-t > extLookback:
+					// Pre-range baseline older than the ext lookback; skip it.
+				case !appendedPointBeforeMint:
+					m.buffer.Push(t, ringbuffer.Value{H: fh})
+					appendedPointBeforeMint = true
+				default:
 					m.buffer.ReadIntoLast(func(s *ringbuffer.Sample) {
 						s.T = t
 						if s.V.H == nil {
@@ -450,10 +502,16 @@ func (m *matrixScanner) selectPoints(
 				return nil
 			}
 			if isExtFunction {
-				if t > mint || !appendedPointBeforeMint {
+				switch {
+				case t > rangeStart:
 					m.buffer.Push(t, ringbuffer.Value{F: v})
 					appendedPointBeforeMint = true
-				} else {
+				case rangeStart-t > extLookback:
+					// Pre-range baseline older than the ext lookback; skip it.
+				case !appendedPointBeforeMint:
+					m.buffer.Push(t, ringbuffer.Value{F: v})
+					appendedPointBeforeMint = true
+				default:
 					m.buffer.ReadIntoLast(func(s *ringbuffer.Sample) {
 						s.T, s.V.F, s.V.H = t, v, nil
 					})

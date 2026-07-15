@@ -587,17 +587,29 @@ func extendedRate(samples []Sample, isCounter, isRate bool, stepTime int64, sele
 			// Make sure we are not at the end of the range.
 			if stepTime-offset <= until {
 				var warn warnings.Warnings
-				h := samples[0].V.H.Copy()
-				if h.CounterResetHint == histogram.GaugeType {
-					warn |= warnings.WarnNotCounter
+				// sameHistogramValues uses FloatHistogram.Equals, which ignores
+				// CounterResetHint, so equal-valued samples may still carry
+				// different hints. Scan every sample the way histogramRate would,
+				// otherwise a trailing GaugeType sample silently drops the warning.
+				for i := range samples {
+					if samples[i].V.H != nil && samples[i].V.H.CounterResetHint == histogram.GaugeType {
+						warn |= warnings.WarnNotCounter
+						break
+					}
 				}
+				h := samples[0].V.H.Copy()
 				h.CounterResetHint = histogram.GaugeType
 				return 0, h.Compact(0), true, warn, nil
 			}
 		}
 
 		if len(samples) < 2 {
-			// Not enough points to compute a delta; emit no sample.
+			// A rate/delta over a single histogram is undefined: unlike the
+			// float path (which emits 0), there is no meaningful zero-shaped
+			// histogram to return, so emit no sample. This matches Prometheus'
+			// histogramRate, which returns nil for fewer than two points. Note
+			// single-sample xincrease is already handled by the zero injection
+			// above; only xrate/xdelta and post-window xincrease reach here.
 			return 0, nil, false, 0, nil
 		}
 

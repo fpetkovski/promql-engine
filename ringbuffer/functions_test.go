@@ -380,3 +380,50 @@ func TestExtendedRateHistogramSchemaChange(t *testing.T) {
 	require.NotNil(t, h)
 	require.Equal(t, int32(0), h.Schema, "result must be down-converted to the minimum schema in the range")
 }
+
+// TestExtendedRateHistogramZeroInjectionWarns is a regression test for the
+// xincrease zero-injection path: it must scan every sample for a gauge hint,
+// not just the first. sameHistogramValues compares values via
+// FloatHistogram.Equals, which ignores CounterResetHint, so a range whose first
+// sample is a counter and a later equal-valued sample is a gauge takes the
+// injection path yet must still emit WarnNotCounter.
+func TestExtendedRateHistogramZeroInjectionWarns(t *testing.T) {
+	const (
+		selectRange = int64(300000)
+		stepTime    = int64(300000)
+	)
+	samples := []Sample{
+		{T: 0, V: Value{H: newTestHistogramWithHint(3, histogram.NotCounterReset)}},
+		{T: 150000, V: Value{H: newTestHistogramWithHint(3, histogram.GaugeType)}},
+	}
+	_, h, ok, warn, err := extendedRate(samples, true, false, stepTime, selectRange, 0, 0)
+	require.NoError(t, err)
+	require.True(t, ok, "equal-valued samples must take the zero-injection path")
+	require.NotNil(t, h)
+	require.Equal(t, newTestHistogram(3).Sum, h.Sum, "must return the injected sample value, confirming the injection path")
+	require.NotZero(t, warn&warnings.WarnNotCounter, "a gauge sample after the first must still warn")
+}
+
+// TestExtendedRateHistogramSingleSampleUndefined pins finding #3's intentional
+// behaviour: unlike the float path (which emits 0), a single-sample histogram
+// xrate/xdelta and a single-sample xincrease past the injection window emit
+// nothing rather than a zero-shaped histogram.
+func TestExtendedRateHistogramSingleSampleUndefined(t *testing.T) {
+	const selectRange = int64(300000)
+
+	t.Run("xdelta emits nothing", func(t *testing.T) {
+		samples := histogramSamples([]int64{300000}, []float64{3})
+		_, h, ok, _, err := extendedRate(samples, false, false, 300000, selectRange, 0, 0)
+		require.NoError(t, err)
+		require.False(t, ok)
+		require.Nil(t, h)
+	})
+
+	t.Run("xincrease past the injection window emits nothing", func(t *testing.T) {
+		samples := histogramSamples([]int64{600000}, []float64{3})
+		_, h, ok, _, err := extendedRate(samples, true, false, 600000, selectRange, 0, 0)
+		require.NoError(t, err)
+		require.False(t, ok)
+		require.Nil(t, h)
+	})
+}

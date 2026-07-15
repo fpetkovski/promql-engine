@@ -2655,7 +2655,7 @@ func TestXFunctionsRangeQuery(t *testing.T) {
 					Metric: labels.New(),
 					Floats: []promql.FPoint{
 						{T: 00_000, F: 1},
-						{T: 20_000, F: 9}, // TODO: this seems odd, feels like it should be 5
+						{T: 20_000, F: 5},
 						{T: 40_000, F: 0},
 						{T: 60_000, F: 0},
 					},
@@ -2803,9 +2803,13 @@ func TestXFunctionsWithNativeHistograms(t *testing.T) {
 	require.Greater(t, xincSum/xrateSum, 100.0, "xrate must be divided by the range, not equal to xincrease")
 }
 
-// TestXFunctionsNativeHistogramsRangeQuery exercises the multi-step plumbing
-// (buffer ext-lookback retention, lastSample carry-over, and the histogram
-// ReadIntoLast branch in the matrix selector) that the instant-only test skips.
+// TestXFunctionsNativeHistogramsRangeQuery exercises multi-step range queries
+// with concrete numeric assertions. It uses non-overlapping windows (the
+// intended way to call these functions, since they look back to the sample
+// before the range start): back-to-back (step == range) which tiles the range
+// exactly, and gapped (step > range) with a sample landing on the next range
+// boundary, which is the regression guard for the prefetched-baseline bug in
+// the matrix selector.
 func TestXFunctionsNativeHistogramsRangeQuery(t *testing.T) {
 	opts := promql.EngineOpts{
 		Timeout:              1 * time.Hour,
@@ -2814,11 +2818,27 @@ func TestXFunctionsNativeHistogramsRangeQuery(t *testing.T) {
 		EnableAtModifier:     true,
 	}
 
+	mkHist := func(mult float64) *histogram.FloatHistogram {
+		return &histogram.FloatHistogram{
+			Schema:          0,
+			ZeroThreshold:   0.001,
+			ZeroCount:       mult,
+			Count:           10 * mult,
+			Sum:             20 * mult,
+			PositiveSpans:   []histogram.Span{{Offset: 0, Length: 2}},
+			PositiveBuckets: []float64{4 * mult, 5 * mult},
+		}
+	}
+
 	lStorage := teststorage.New(t)
 	defer lStorage.Close()
 
 	app := lStorage.Appender(context.TODO())
-	testutil.Ok(t, generateFloatHistogramSeries(app, 100, false))
+	// Sums: t=0->20, 30->40, 60->60, 90->80, 120->100, 150->120.
+	for i, sec := range []int64{0, 30, 60, 90, 120, 150} {
+		_, err := app.AppendHistogram(0, labels.FromStrings(labels.MetricName, "h"), time.Unix(sec, 0).UnixMilli(), nil, mkHist(float64(i+1)))
+		testutil.Ok(t, err)
+	}
 	testutil.Ok(t, app.Commit())
 
 	newEngine := engine.New(engine.Opts{
@@ -2828,19 +2848,192 @@ func TestXFunctionsNativeHistogramsRangeQuery(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	for _, fn := range []string{"xincrease", "xrate", "xdelta"} {
-		q, err := newEngine.NewRangeQuery(ctx, lStorage, nil, fn+"(native_histogram_series[60s])", time.Unix(300, 0), time.Unix(600, 0), 30*time.Second)
+	sumPoints := func(t *testing.T, query string, start, end, step int64) []promql.FPoint {
+		t.Helper()
+		q, err := newEngine.NewRangeQuery(ctx, lStorage, nil, query, time.Unix(start, 0), time.Unix(end, 0), time.Duration(step)*time.Second)
 		testutil.Ok(t, err)
+		defer q.Close()
 		res := q.Exec(ctx)
 		testutil.Ok(t, res.Err)
 		m, err := res.Matrix()
 		testutil.Ok(t, err)
-		q.Close()
+		if len(m) == 0 {
+			return nil
+		}
+		testutil.Equals(t, 0, len(m[0].Histograms), "histogram_sum must yield floats")
+		return m[0].Floats
+	}
 
-		testutil.Assert(t, len(m) > 0, "expected %s to produce series", fn)
-		for _, s := range m {
-			testutil.Assert(t, len(s.Histograms) > 1, "expected %s to produce histogram points across steps", fn)
-			testutil.Assert(t, len(s.Floats) == 0, "%s must not emit float points for a native histogram", fn)
+	t.Run("back-to-back xincrease tiles the range", func(t *testing.T) {
+		got := sumPoints(t, "histogram_sum(xincrease(h[30s]))", 30, 150, 30)
+		exp := []promql.FPoint{
+			{T: 30_000, F: 20}, {T: 60_000, F: 20}, {T: 90_000, F: 20},
+			{T: 120_000, F: 20}, {T: 150_000, F: 20},
+		}
+		testutil.Equals(t, exp, got)
+	})
+
+	t.Run("gapped xincrease keeps the boundary baseline", func(t *testing.T) {
+		// step 60 > range 30, so mint at t=120 is 90 and the sample at 90 is
+		// prefetched as lastSample landing exactly on mint. The increase must be
+		// 100-80=20 (baseline 90s), not 100-60=40 (stale 60s baseline).
+		got := sumPoints(t, "histogram_sum(xincrease(h[30s]))", 60, 180, 60)
+		exp := []promql.FPoint{{T: 60_000, F: 20}, {T: 120_000, F: 20}}
+		testutil.Equals(t, exp, got)
+	})
+
+	t.Run("back-to-back xrate equals xincrease over range seconds", func(t *testing.T) {
+		got := sumPoints(t, "histogram_sum(xrate(h[30s]))", 30, 150, 30)
+		require.Len(t, got, 5)
+		for _, p := range got {
+			require.InEpsilon(t, 20.0/30.0, p.F, 1e-9)
+		}
+	})
+
+	t.Run("xrate/xdelta emit histograms, never floats", func(t *testing.T) {
+		for _, fn := range []string{"xrate", "xdelta"} {
+			q, err := newEngine.NewRangeQuery(ctx, lStorage, nil, fn+"(h[30s])", time.Unix(30, 0), time.Unix(150, 0), 30*time.Second)
+			testutil.Ok(t, err)
+			res := q.Exec(ctx)
+			testutil.Ok(t, res.Err)
+			m, err := res.Matrix()
+			testutil.Ok(t, err)
+			q.Close()
+
+			testutil.Assert(t, len(m) > 0, "expected %s to produce series", fn)
+			for _, s := range m {
+				testutil.Assert(t, len(s.Histograms) > 1, "expected %s to produce histogram points across steps", fn)
+				testutil.Assert(t, len(s.Floats) == 0, "%s must not emit float points for a native histogram", fn)
+			}
+		}
+	})
+}
+
+// TestXIncreaseOverlappingBoundaryNoClobber guards the prefetched-baseline
+// handling: with overlapping windows, Reset retains the whole in-window suffix,
+// so the cached sample must be classified against the range start, not the
+// mutated iterator cursor. A sample landing exactly one step after the retained
+// in-window max would otherwise overwrite that in-window point.
+func TestXIncreaseOverlappingBoundaryNoClobber(t *testing.T) {
+	opts := promql.EngineOpts{Timeout: time.Hour, MaxSamples: 1e10, EnableNegativeOffset: true, EnableAtModifier: true}
+	lStorage := teststorage.New(t)
+	defer lStorage.Close()
+
+	app := lStorage.Appender(context.TODO())
+	// Counter with a reset (200 -> 0) so the clobbered mid-sample changes the
+	// result. Sample at 10.001s lands at retained-max(10s)+1ms when prefetched.
+	for _, s := range []struct {
+		ms int64
+		v  float64
+	}{{0, 100}, {10000, 200}, {10001, 0}, {20000, 10}} {
+		_, err := app.Append(0, labels.FromStrings(labels.MetricName, "m"), s.ms, s.v)
+		testutil.Ok(t, err)
+	}
+	testutil.Ok(t, app.Commit())
+
+	newEngine := engine.New(engine.Opts{EngineOpts: opts, LogicalOptimizers: logicalplan.AllOptimizers, EnableXFunctions: true})
+	q, err := newEngine.NewRangeQuery(context.Background(), lStorage, nil, "xincrease(m[20s])", time.Unix(10, 0), time.Unix(20, 0), 10*time.Second)
+	testutil.Ok(t, err)
+	defer q.Close()
+	res := q.Exec(context.Background())
+	testutil.Ok(t, res.Err)
+	m, err := res.Matrix()
+	testutil.Ok(t, err)
+
+	require.Len(t, m, 1)
+	var got float64
+	var found bool
+	for _, p := range m[0].Floats {
+		if p.T == 20_000 {
+			got, found = p.F, true
+		}
+	}
+	require.True(t, found, "expected a sample at 20s")
+	require.Equal(t, 110.0, got, "in-window sample must not be clobbered: 10-100+200(reset)=110")
+}
+
+// TestXIncreaseStaleBaselineBeyondExtLookback guards that a prefetched sample
+// older than ExtLookbackDelta is not resurrected as a baseline when a step gap
+// exceeds the lookback, matching the ring buffer's Reset retention rule.
+func TestXIncreaseStaleBaselineBeyondExtLookback(t *testing.T) {
+	opts := promql.EngineOpts{Timeout: time.Hour, MaxSamples: 1e10, EnableNegativeOffset: true, EnableAtModifier: true}
+	lStorage := teststorage.New(t)
+	defer lStorage.Close()
+
+	app := lStorage.Appender(context.TODO())
+	// Two pre-range samples (10s, 20s) both older than the 1h lookback, then the
+	// only in-window sample at 2h. Neither old sample may become the baseline:
+	// the prefetched 10s is dropped by the lastSample guard, and the 20s must be
+	// skipped by the iterator (otherwise xincrease is 500-200=300, not 0).
+	for _, s := range []struct {
+		ms int64
+		v  float64
+	}{{10_000, 100}, {20_000, 200}, {7_200_000, 500}} {
+		_, err := app.Append(0, labels.FromStrings(labels.MetricName, "m"), s.ms, s.v)
+		testutil.Ok(t, err)
+	}
+	testutil.Ok(t, app.Commit())
+
+	newEngine := engine.New(engine.Opts{EngineOpts: opts, LogicalOptimizers: logicalplan.AllOptimizers, EnableXFunctions: true, ExtLookbackDelta: time.Hour})
+	// Step (2h) exceeds ext lookback (1h); the 10s sample is prefetched, but is
+	// far too old to be the 2h step's baseline.
+	q, err := newEngine.NewRangeQuery(context.Background(), lStorage, nil, "xincrease(m[10s])", time.Unix(0, 0), time.Unix(7200, 0), 7200*time.Second)
+	testutil.Ok(t, err)
+	defer q.Close()
+	res := q.Exec(context.Background())
+	testutil.Ok(t, res.Err)
+	m, err := res.Matrix()
+	testutil.Ok(t, err)
+
+	require.Len(t, m, 1)
+	for _, p := range m[0].Floats {
+		require.Equal(t, 0.0, p.F, "a >ext-lookback-old sample must not be used as baseline (got stale increase)")
+	}
+}
+
+// TestXIncreaseNativeHistogramStaleBaselineBeyondExtLookback is the histogram
+// analogue of the stale-baseline guard: two pre-range histogram samples older
+// than the lookback must both be rejected as baseline (one via the lastSample
+// guard, one via the iterator skip), leaving a single in-window sample whose
+// xincrease is undefined, so no point is emitted (not a stale 500-200=300).
+func TestXIncreaseNativeHistogramStaleBaselineBeyondExtLookback(t *testing.T) {
+	opts := promql.EngineOpts{Timeout: time.Hour, MaxSamples: 1e10, EnableNegativeOffset: true, EnableAtModifier: true}
+	mkHist := func(mult float64) *histogram.FloatHistogram {
+		return &histogram.FloatHistogram{
+			Schema:          0,
+			ZeroThreshold:   0.001,
+			ZeroCount:       mult,
+			Count:           10 * mult,
+			Sum:             20 * mult,
+			PositiveSpans:   []histogram.Span{{Offset: 0, Length: 2}},
+			PositiveBuckets: []float64{4 * mult, 5 * mult},
+		}
+	}
+	lStorage := teststorage.New(t)
+	defer lStorage.Close()
+
+	app := lStorage.Appender(context.TODO())
+	for _, s := range []struct {
+		sec  int64
+		mult float64
+	}{{10, 5}, {20, 10}, {7200, 25}} {
+		_, err := app.AppendHistogram(0, labels.FromStrings(labels.MetricName, "m"), time.Unix(s.sec, 0).UnixMilli(), nil, mkHist(s.mult))
+		testutil.Ok(t, err)
+	}
+	testutil.Ok(t, app.Commit())
+
+	newEngine := engine.New(engine.Opts{EngineOpts: opts, LogicalOptimizers: logicalplan.AllOptimizers, EnableXFunctions: true, ExtLookbackDelta: time.Hour})
+	q, err := newEngine.NewRangeQuery(context.Background(), lStorage, nil, "histogram_sum(xincrease(m[10s]))", time.Unix(0, 0), time.Unix(7200, 0), 7200*time.Second)
+	testutil.Ok(t, err)
+	defer q.Close()
+	res := q.Exec(context.Background())
+	testutil.Ok(t, res.Err)
+	m, err := res.Matrix()
+	testutil.Ok(t, err)
+
+	for _, s := range m {
+		for _, p := range s.Floats {
+			require.NotEqual(t, int64(7_200_000), p.T, "no sample must be emitted from a >ext-lookback-old baseline (got %v)", p.F)
 		}
 	}
 }
