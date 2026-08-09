@@ -304,8 +304,9 @@ narrow the requirement it passes to its children:
   matching clause (plus `group_left/right` include labels), computed per side and
   per matching cardinality;
 - **`label_replace`/`label_join`** add their source labels to the requirement
-  only when the destination label is itself needed, and **`histogram_quantile`**
-  disables projection entirely because it needs the `le` bucket label;
+  only when the destination label is itself needed, and the
+  **`histogram_quantile`/`histogram_quantiles`** functions disable projection
+  entirely because they need the `le` bucket label;
 - **`absent`/`absent_over_time`/`scalar`** need no labels at all.
 
 At execution time the projection is lowered into a Prometheus `SelectHints`

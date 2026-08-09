@@ -18,10 +18,18 @@ import (
 	"github.com/thanos-io/promql-engine/warnings"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/efficientgo/core/errors"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser/posrange"
 	"github.com/prometheus/prometheus/util/annotations"
+)
+
+type histogramOperation uint8
+
+const (
+	histogramQuantileOperation histogramOperation = iota
+	histogramFractionOperation
 )
 
 type histogramSeries struct {
@@ -31,39 +39,65 @@ type histogramSeries struct {
 	bucketLabelValue string // original bucket label value for use in warnings
 }
 
-// histogramOperator is a function operator that calculates percentiles.
+// quantilePoint is a quantile value at one evaluation step. Plural quantiles
+// include the offset of the output-series block carrying the formatted value.
+type quantilePoint struct {
+	timestamp    int64
+	value        float64
+	outputOffset uint64
+}
+
+// histogramOperator reconstructs classic histograms and evaluates histogram
+// functions over classic and native histograms. A singular histogram quantile
+// is represented as a quantile operation with one scalar argument.
 type histogramOperator struct {
-	once   sync.Once
-	series []labels.Labels
+	once      sync.Once
+	seriesErr error
 
-	funcName   string
-	funcArgs   logicalplan.Nodes
+	operation histogramOperation
+	funcName  string
+	funcArgs  logicalplan.Nodes
+
 	stepsBatch int
+	nextOps    []model.VectorOperator
 	vectorOp   model.VectorOperator
-	scalar1Op  model.VectorOperator
-	scalar2Op  model.VectorOperator
+	scalarOps  []model.VectorOperator
 
-	// scalarPoints is a reusable buffer for points from the first argument of histogram_quantile.
-	scalar1Points []float64
-	scalar2Points []float64
+	// addQuantileLabel distinguishes histogram_quantiles from the singular
+	// function. The label name itself may be empty, so it cannot be the sentinel.
+	addQuantileLabel bool
+	quantileLabel    string
 
-	// outputIndex is a mapping from input series ID to the output series ID and its upper boundary value
-	// parsed from the le label.
-	// If outputIndex[i] is nil then series[i] has no valid `le` label.
+	// baseSeries contains one entry per reconstructed histogram. series is the
+	// externally visible output and contains one block of baseSeries for each
+	// quantile argument/value pair for histogram_quantiles.
+	baseSeries      []labels.Labels
+	baseSeriesNames []string
+	series          []labels.Labels
+
+	// scalarPoints contains one batch of scalar values for singular quantiles or
+	// histogram_fraction. Plural quantiles are evaluated during Series because
+	// their values are part of the output label sets.
+	scalarPoints   [][]float64
+	quantilePoints [][]quantilePoint
+	quantileCursor int
+
+	// outputIndex maps an input series ID to its reconstructed histogram ID and,
+	// for float samples, the parsed le boundary.
 	outputIndex []*histogramSeries
 
-	// needed to compile warnings on mixed histograms
+	// inputSeriesNames is needed for warnings tied to malformed input series.
 	inputSeriesNames []string
 
-	// seriesBuckets are the buckets for each individual conventional histogram series.
+	// seriesBuckets contains the classic buckets for each reconstructed
+	// histogram at the current step.
 	seriesBuckets []promql.Buckets
 
 	// badBucketWarned tracks which series have already emitted bad bucket label warnings.
 	badBucketWarned map[uint64]bool
 
 	vectorBuf  []model.StepVector
-	scalar1Buf []model.StepVector
-	scalar2Buf []model.StepVector
+	scalarBufs [][]model.StepVector
 }
 
 func newHistogramOperator(
@@ -76,22 +110,30 @@ func newHistogramOperator(
 		funcName:   call.Func.Name,
 		funcArgs:   call.Args,
 		stepsBatch: stepsBatch,
+		nextOps:    nextOps,
 	}
 
+	// String arguments are omitted from nextOps, so normalize each public
+	// signature into a vector input and an ordered list of scalar inputs.
 	switch o.funcName {
 	case "histogram_quantile":
-		o.scalar1Op = nextOps[0]
+		o.operation = histogramQuantileOperation
+		o.scalarOps = nextOps[:1]
 		o.vectorOp = nextOps[1]
-		o.scalar1Points = make([]float64, stepsBatch)
+	case "histogram_quantiles":
+		o.operation = histogramQuantileOperation
+		o.vectorOp = nextOps[0]
+		o.scalarOps = nextOps[1:]
+		o.addQuantileLabel = true
+		o.quantileLabel = logicalplan.UnsafeUnwrapString(call.Args[1])
 	case "histogram_fraction":
-		o.scalar1Op = nextOps[0]
-		o.scalar2Op = nextOps[1]
+		o.operation = histogramFractionOperation
+		o.scalarOps = nextOps[:2]
 		o.vectorOp = nextOps[2]
-		o.scalar1Points = make([]float64, stepsBatch)
-		o.scalar2Points = make([]float64, stepsBatch)
 	default:
 		panic("unsupported function passed")
 	}
+
 	return telemetry.NewOperator(telemetry.NewTelemetry(o, opts), o)
 }
 
@@ -99,21 +141,14 @@ func (o *histogramOperator) String() string {
 	return fmt.Sprintf("[%s](%v)", o.funcName, o.funcArgs)
 }
 
-func (o *histogramOperator) Explain() (next []model.VectorOperator) {
-	switch o.funcName {
-	case "histogram_quantile":
-		return []model.VectorOperator{o.scalar1Op, o.vectorOp}
-	case "histogram_fraction":
-		return []model.VectorOperator{o.scalar1Op, o.scalar2Op, o.vectorOp}
-	}
-	return nil
+func (o *histogramOperator) Explain() []model.VectorOperator {
+	return o.nextOps
 }
 
 func (o *histogramOperator) Series(ctx context.Context) ([]labels.Labels, error) {
-	var err error
-	o.once.Do(func() { err = o.loadSeries(ctx) })
-	if err != nil {
-		return nil, err
+	o.once.Do(func() { o.seriesErr = o.loadSeries(ctx) })
+	if o.seriesErr != nil {
+		return nil, o.seriesErr
 	}
 	return o.series, nil
 }
@@ -125,14 +160,20 @@ func (o *histogramOperator) Next(ctx context.Context, buf []model.StepVector) (i
 	default:
 	}
 
-	var err error
-	o.once.Do(func() { err = o.loadSeries(ctx) })
-	if err != nil {
-		return 0, err
+	o.once.Do(func() { o.seriesErr = o.loadSeries(ctx) })
+	if o.seriesErr != nil {
+		return 0, o.seriesErr
+	}
+	if len(buf) == 0 {
+		return 0, nil
 	}
 
-	// First get vector data to know how many steps we need
-	vectorN, err := o.vectorOp.Next(ctx, o.vectorBuf)
+	// Read vector data first to determine the number of steps in this batch.
+	vectorBuf := o.vectorBuf
+	if len(buf) < len(vectorBuf) {
+		vectorBuf = vectorBuf[:len(buf)]
+	}
+	vectorN, err := o.vectorOp.Next(ctx, vectorBuf)
 	if err != nil {
 		return 0, err
 	}
@@ -140,156 +181,155 @@ func (o *histogramOperator) Next(ctx context.Context, buf []model.StepVector) (i
 		return 0, nil
 	}
 
-	// Now get scalar data for the same number of steps
-	switch o.funcName {
-	case "histogram_quantile":
-		scalar1N, err := o.scalar1Op.Next(ctx, o.scalar1Buf[:vectorN])
-		if err != nil {
+	// Plural quantiles were consumed during Series so their label values could
+	// be declared up front. Other operations continue to stream scalar inputs.
+	if !o.addQuantileLabel {
+		if err := o.readScalarPoints(ctx, vectorN); err != nil {
 			return 0, err
-		}
-
-		if scalar1N == 0 {
-			return 0, nil
-		}
-
-		o.scalar1Points = o.scalar1Points[:0]
-		for i := range scalar1N {
-			scalar := o.scalar1Buf[i]
-			if len(scalar.Samples) > 0 {
-				sample := scalar.Samples[0]
-				if math.IsNaN(sample) || sample < 0 || sample > 1 {
-					warnings.AddToContext(annotations.NewInvalidQuantileWarning(sample, posrange.PositionRange{}), ctx)
-				}
-				o.scalar1Points = append(o.scalar1Points, sample)
-			}
-		}
-	case "histogram_fraction":
-		scalar1N, err := o.scalar1Op.Next(ctx, o.scalar1Buf[:vectorN])
-		if err != nil {
-			return 0, err
-		}
-
-		if scalar1N == 0 {
-			return 0, nil
-		}
-
-		o.scalar1Points = o.scalar1Points[:0]
-		for i := range scalar1N {
-			scalar := o.scalar1Buf[i]
-			if len(scalar.Samples) > 0 {
-				sample := scalar.Samples[0]
-				o.scalar1Points = append(o.scalar1Points, sample)
-			}
-		}
-
-		scalar2N, err := o.scalar2Op.Next(ctx, o.scalar2Buf[:vectorN])
-		if err != nil {
-			return 0, err
-		}
-
-		if scalar2N == 0 {
-			return 0, nil
-		}
-
-		o.scalar2Points = o.scalar2Points[:0]
-		for i := range scalar2N {
-			scalar := o.scalar2Buf[i]
-			if len(scalar.Samples) > 0 {
-				sample := scalar.Samples[0]
-				o.scalar2Points = append(o.scalar2Points, sample)
-			}
 		}
 	}
 
-	// Process the vector data and write to output buffer
-	vectors := o.vectorBuf[:vectorN]
-	n, err := o.processInputSeries(ctx, vectors, buf)
+	n, err := o.processInputSeries(ctx, vectorBuf[:vectorN], buf)
 	if err != nil {
 		return 0, err
 	}
-
+	if o.addQuantileLabel {
+		o.quantileCursor += n
+	}
 	return n, nil
 }
 
-// nolint: unparam
+func (o *histogramOperator) readScalarPoints(ctx context.Context, numSteps int) error {
+	for scalarIndex, scalarOp := range o.scalarOps {
+		scalarN, err := scalarOp.Next(ctx, o.scalarBufs[scalarIndex][:numSteps])
+		if err != nil {
+			return err
+		}
+
+		for stepIndex := range numSteps {
+			value := math.NaN()
+			if stepIndex < scalarN && len(o.scalarBufs[scalarIndex][stepIndex].Samples) > 0 {
+				value = o.scalarBufs[scalarIndex][stepIndex].Samples[0]
+			}
+			o.scalarPoints[scalarIndex][stepIndex] = value
+			if o.operation == histogramQuantileOperation {
+				o.warnInvalidQuantile(ctx, value)
+			}
+		}
+	}
+	return nil
+}
+
+func (o *histogramOperator) warnInvalidQuantile(ctx context.Context, value float64) {
+	if math.IsNaN(value) || value < 0 || value > 1 {
+		warnings.AddToContext(annotations.NewInvalidQuantileWarning(value, posrange.PositionRange{}), ctx)
+	}
+}
+
 func (o *histogramOperator) processInputSeries(ctx context.Context, vectors []model.StepVector, buf []model.StepVector) (int, error) {
 	n := 0
 	for stepIndex, vector := range vectors {
 		if n >= len(buf) {
 			break
 		}
+		if err := o.validateQuantileStep(stepIndex, vector.T); err != nil {
+			return 0, err
+		}
+
 		o.resetBuckets()
 		for i, seriesID := range vector.SampleIDs {
 			outputSeries := o.outputIndex[seriesID]
 			// This means that it has an invalid `le` label.
 			if outputSeries == nil || !outputSeries.hasBucketValue {
-				// Emit warning for invalid bucket label (only once per series).
-				if outputSeries != nil && !o.badBucketWarned[uint64(seriesID)] {
-					o.badBucketWarned[uint64(seriesID)] = true
-					metricName := o.inputSeriesNames[seriesID]
-					warnings.AddToContext(annotations.NewBadBucketLabelWarning(metricName, outputSeries.bucketLabelValue, posrange.PositionRange{}), ctx)
+				// Emit warning for invalid bucket label only once per series.
+				if outputSeries != nil && !o.badBucketWarned[seriesID] {
+					o.badBucketWarned[seriesID] = true
+					warnings.AddToContext(annotations.NewBadBucketLabelWarning(
+						o.inputSeriesNames[seriesID],
+						outputSeries.bucketLabelValue,
+						posrange.PositionRange{},
+					), ctx)
 				}
 				continue
 			}
 
-			outputSeriesID := outputSeries.outputID
-			bucket := promql.Bucket{
+			groupID := outputSeries.outputID
+			o.seriesBuckets[groupID] = append(o.seriesBuckets[groupID], promql.Bucket{
 				UpperBound: outputSeries.upperBound,
 				Count:      vector.Samples[i],
-			}
-			o.seriesBuckets[outputSeriesID] = append(o.seriesBuckets[outputSeriesID], bucket)
+			})
 		}
 
 		buf[n].Reset(vector.T)
 		for i, seriesID := range vector.HistogramIDs {
-			outputSeriesID := o.outputIndex[seriesID].outputID
-			// We need to check if there is a conventional histogram mapped to this output series ID.
-			// If that is the case, it means we have mixed data types for a single step and this behavior is undefined.
-			// In that case, we reset the conventional buckets to avoid emitting a sample.
-			if len(o.seriesBuckets[outputSeriesID]) == 0 {
-				var annos annotations.Annotations
-				var v float64
-				switch o.funcName {
-				case "histogram_quantile":
-					v, annos = promql.HistogramQuantile(o.scalar1Points[stepIndex], vector.Histograms[i], o.inputSeriesNames[seriesID], posrange.PositionRange{})
-					buf[n].AppendSample(uint64(outputSeriesID), v)
-				case "histogram_fraction":
-					v, annos = promql.HistogramFraction(o.scalar1Points[stepIndex], o.scalar2Points[stepIndex], vector.Histograms[i], o.inputSeriesNames[seriesID], posrange.PositionRange{})
-					buf[n].AppendSample(uint64(outputSeriesID), v)
+			groupID := o.outputIndex[seriesID].outputID
+			// A classic histogram mapped to the same group means this step mixes
+			// classic and native histogram representations. Suppress both.
+			if len(o.seriesBuckets[groupID]) != 0 {
+				warnings.AddToContext(annotations.NewMixedClassicNativeHistogramsWarning(
+					o.baseSeriesNames[groupID],
+					posrange.PositionRange{},
+				), ctx)
+				o.seriesBuckets[groupID] = o.seriesBuckets[groupID][:0]
+				continue
+			}
+
+			switch o.operation {
+			case histogramQuantileOperation:
+				for quantileIndex := range len(o.scalarOps) {
+					q, outputID := o.quantileAt(quantileIndex, stepIndex, groupID)
+					value, annos := promql.HistogramQuantile(
+						q,
+						vector.Histograms[i],
+						o.baseSeriesNames[groupID],
+						posrange.PositionRange{},
+					)
+					buf[n].AppendSample(outputID, value)
+					warnings.MergeToContext(annos, ctx)
 				}
+			case histogramFractionOperation:
+				value, annos := promql.HistogramFraction(
+					o.scalarPoints[0][stepIndex],
+					o.scalarPoints[1][stepIndex],
+					vector.Histograms[i],
+					o.baseSeriesNames[groupID],
+					posrange.PositionRange{},
+				)
+				buf[n].AppendSample(uint64(groupID), value)
 				warnings.MergeToContext(annos, ctx)
-			} else {
-				warnings.AddToContext(annotations.NewMixedClassicNativeHistogramsWarning(o.inputSeriesNames[seriesID], posrange.PositionRange{}), ctx)
-				o.seriesBuckets[outputSeriesID] = o.seriesBuckets[outputSeriesID][:0]
 			}
 		}
 
-		for i, stepBuckets := range o.seriesBuckets {
-			// It could be zero if multiple input series map to the same output series ID.
+		for groupID, stepBuckets := range o.seriesBuckets {
 			if len(stepBuckets) == 0 {
 				continue
 			}
-			// If we are after how many scalar points we have then it needs to be NaN.
-			if stepIndex >= len(o.scalar1Points) {
-				buf[n].AppendSample(uint64(i), math.NaN())
-				continue
-			}
-			switch o.funcName {
-			case "histogram_quantile":
-				// histogram_quantile needs at least 2 buckets.
-				if len(stepBuckets) == 1 {
-					buf[n].AppendSample(uint64(i), math.NaN())
-					continue
+
+			switch o.operation {
+			case histogramQuantileOperation:
+				for quantileIndex := range len(o.scalarOps) {
+					q, outputID := o.quantileAt(quantileIndex, stepIndex, groupID)
+					// BucketQuantile expects at least two buckets.
+					if len(stepBuckets) == 1 {
+						buf[n].AppendSample(outputID, math.NaN())
+						continue
+					}
+					value, forcedMonotonicity, _ := promql.BucketQuantile(q, stepBuckets)
+					buf[n].AppendSample(outputID, value)
+					if forcedMonotonicity {
+						warnings.AddToContext(annotations.NewHistogramQuantileForcedMonotonicityInfo(
+							o.baseSeriesNames[groupID],
+							posrange.PositionRange{},
+						), ctx)
+					}
 				}
-				v, forcedMonotonicity, _ := promql.BucketQuantile(o.scalar1Points[stepIndex], stepBuckets)
-				buf[n].AppendSample(uint64(i), v)
-				if forcedMonotonicity {
-					warnings.AddToContext(annotations.NewHistogramQuantileForcedMonotonicityInfo(o.inputSeriesNames[i], posrange.PositionRange{}), ctx)
-				}
-			case "histogram_fraction":
-				// BucketFraction handles single bucket and other edge cases properly.
-				v := promql.BucketFraction(o.scalar1Points[stepIndex], o.scalar2Points[stepIndex], stepBuckets)
-				buf[n].AppendSample(uint64(i), v)
+			case histogramFractionOperation:
+				value := promql.BucketFraction(
+					o.scalarPoints[0][stepIndex],
+					o.scalarPoints[1][stepIndex],
+					stepBuckets,
+				)
+				buf[n].AppendSample(uint64(groupID), value)
 			}
 		}
 		n++
@@ -298,12 +338,44 @@ func (o *histogramOperator) processInputSeries(ctx context.Context, vectors []mo
 	return n, nil
 }
 
-func (o *histogramOperator) loadSeries(ctx context.Context) error {
+func (o *histogramOperator) validateQuantileStep(stepIndex int, timestamp int64) error {
+	if !o.addQuantileLabel {
+		return nil
+	}
+	pointIndex := o.quantileCursor + stepIndex
+	for quantileIndex := range o.quantilePoints {
+		if pointIndex >= len(o.quantilePoints[quantileIndex]) {
+			return errors.Newf("histogram_quantiles scalar argument %d ended before timestamp %d", quantileIndex, timestamp)
+		}
+		if pointTimestamp := o.quantilePoints[quantileIndex][pointIndex].timestamp; pointTimestamp != timestamp {
+			return errors.Newf(
+				"histogram_quantiles scalar argument %d has timestamp %d, expected %d",
+				quantileIndex,
+				pointTimestamp,
+				timestamp,
+			)
+		}
+	}
+	return nil
+}
 
+func (o *histogramOperator) quantileAt(quantileIndex, stepIndex, groupID int) (float64, uint64) {
+	if !o.addQuantileLabel {
+		return o.scalarPoints[quantileIndex][stepIndex], uint64(groupID)
+	}
+	point := o.quantilePoints[quantileIndex][o.quantileCursor+stepIndex]
+	return point.value, point.outputOffset + uint64(groupID)
+}
+
+func (o *histogramOperator) loadSeries(ctx context.Context) error {
 	o.vectorBuf = make([]model.StepVector, o.stepsBatch)
-	o.scalar1Buf = make([]model.StepVector, o.stepsBatch)
-	if o.scalar2Op != nil {
-		o.scalar2Buf = make([]model.StepVector, o.stepsBatch)
+	if !o.addQuantileLabel {
+		o.scalarBufs = make([][]model.StepVector, len(o.scalarOps))
+		o.scalarPoints = make([][]float64, len(o.scalarOps))
+		for i := range o.scalarOps {
+			o.scalarBufs[i] = make([]model.StepVector, o.stepsBatch)
+			o.scalarPoints[i] = make([]float64, o.stepsBatch)
+		}
 	}
 
 	series, err := o.vectorOp.Series(ctx)
@@ -317,47 +389,107 @@ func (o *histogramOperator) loadSeries(ctx context.Context) error {
 		seriesHashes = make(map[uint64]int, len(series))
 	)
 
-	o.series = make([]labels.Labels, 0)
+	o.baseSeries = make([]labels.Labels, 0)
+	o.baseSeriesNames = make([]string, 0)
 	o.inputSeriesNames = make([]string, len(series))
 	o.outputIndex = make([]*histogramSeries, len(series))
-	b := labels.ScratchBuilder{}
-	for i, s := range series {
+	builder := labels.ScratchBuilder{}
+	for i, inputSeries := range series {
 		hasBucketValue := true
-		lbls, bucketLabel := extlabels.DropBucketLabel(s, b)
-		value, err := strconv.ParseFloat(bucketLabel.Value, 64)
+		labelsWithoutBucket, bucketLabel := extlabels.DropBucketLabel(inputSeries, builder)
+		upperBound, err := strconv.ParseFloat(bucketLabel.Value, 64)
 		if err != nil {
 			hasBucketValue = false
 		}
 
 		hasher.Reset()
-		hashBuf = lbls.Bytes(hashBuf)
+		hashBuf = labelsWithoutBucket.Bytes(hashBuf)
 		if _, err := hasher.Write(hashBuf); err != nil {
 			return err
 		}
 
-		// We check for duplicate series after dropped labels when
-		// showing the result of the query. Series that are equal after
-		// dropping name should not hash to the same bucket here.
-		lbls = extlabels.DropReserved(lbls, b)
-
+		// Include reserved labels in the grouping hash so differently named input
+		// histograms remain separate and duplicate output labels can be detected.
+		outputLabels := extlabels.DropReserved(labelsWithoutBucket, builder)
 		seriesHash := hasher.Sum64()
-		seriesID, ok := seriesHashes[seriesHash]
+		groupID, ok := seriesHashes[seriesHash]
 		if !ok {
-			o.series = append(o.series, lbls)
-			seriesID = len(o.series) - 1
-			seriesHashes[seriesHash] = seriesID
+			o.baseSeries = append(o.baseSeries, outputLabels)
+			o.baseSeriesNames = append(o.baseSeriesNames, inputSeries.Get(labels.MetricName))
+			groupID = len(o.baseSeries) - 1
+			seriesHashes[seriesHash] = groupID
 		}
 
-		o.inputSeriesNames[i] = s.Get(labels.MetricName)
+		o.inputSeriesNames[i] = inputSeries.Get(labels.MetricName)
 		o.outputIndex[i] = &histogramSeries{
-			outputID:         seriesID,
-			upperBound:       value,
+			outputID:         groupID,
+			upperBound:       upperBound,
 			hasBucketValue:   hasBucketValue,
 			bucketLabelValue: bucketLabel.Value,
 		}
 	}
-	o.seriesBuckets = make([]promql.Buckets, len(o.series))
+
+	o.seriesBuckets = make([]promql.Buckets, len(o.baseSeries))
 	o.badBucketWarned = make(map[uint64]bool)
+
+	if o.addQuantileLabel {
+		return o.preparePluralQuantiles(ctx)
+	}
+	o.series = o.baseSeries
+	return nil
+}
+
+// preparePluralQuantiles evaluates scalar arguments before execution because
+// their formatted values are part of the output series labels. Histogram input
+// remains streaming; only one scalar value per quantile and step is retained.
+func (o *histogramOperator) preparePluralQuantiles(ctx context.Context) error {
+	o.quantilePoints = make([][]quantilePoint, len(o.scalarOps))
+	o.series = make([]labels.Labels, 0, len(o.baseSeries)*len(o.scalarOps))
+
+	for quantileIndex, scalarOp := range o.scalarOps {
+		buf := make([]model.StepVector, o.stepsBatch)
+		for {
+			n, err := scalarOp.Next(ctx, buf)
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				break
+			}
+			for stepIndex := range n {
+				value := math.NaN()
+				if len(buf[stepIndex].Samples) > 0 {
+					value = buf[stepIndex].Samples[0]
+				}
+				o.warnInvalidQuantile(ctx, value)
+				o.quantilePoints[quantileIndex] = append(o.quantilePoints[quantileIndex], quantilePoint{
+					timestamp: buf[stepIndex].T,
+					value:     value,
+				})
+			}
+		}
+
+		// Blocks are local to a quantile argument. Do not merge equal values
+		// between arguments: simultaneous equal arguments must remain duplicate
+		// label sets so the duplicate-label checker can reject them.
+		blocks := make(map[string]uint64)
+		labelBuilder := labels.NewBuilder(labels.EmptyLabels())
+		for pointIndex := range o.quantilePoints[quantileIndex] {
+			point := &o.quantilePoints[quantileIndex][pointIndex]
+			quantileValue := labels.FormatOpenMetricsFloat(point.value)
+			offset, ok := blocks[quantileValue]
+			if !ok {
+				offset = uint64(len(o.series))
+				blocks[quantileValue] = offset
+				for _, base := range o.baseSeries {
+					labelBuilder.Reset(base)
+					labelBuilder.Set(o.quantileLabel, quantileValue)
+					o.series = append(o.series, labelBuilder.Labels())
+				}
+			}
+			point.outputOffset = offset
+		}
+	}
 	return nil
 }
 

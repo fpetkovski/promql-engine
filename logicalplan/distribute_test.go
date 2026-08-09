@@ -1404,6 +1404,27 @@ func TestPreservesPartitionLabels(t *testing.T) {
 			testutil.Equals(t, tc.expected, result)
 		})
 	}
+
+	for _, tc := range []struct {
+		name        string
+		targetLabel string
+		expected    bool
+	}{
+		{name: "histogram_quantiles targeting partition label does not preserve", targetLabel: "region", expected: false},
+		{name: "histogram_quantiles targeting non-partition label preserves", targetLabel: "quantile", expected: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expr := &FunctionCall{
+				Func: parser.Function{Name: "histogram_quantiles", ReturnType: parser.ValueTypeVector},
+				Args: []Node{
+					&VectorSelector{},
+					&StringLiteral{Val: tc.targetLabel},
+					&NumberLiteral{Val: 0.5},
+				},
+			}
+			testutil.Equals(t, tc.expected, preservesPartitionLabels(expr, partitionLabels))
+		})
+	}
 }
 
 func FuzzDistributedExecutionPreservesPartitionLabels(f *testing.F) {

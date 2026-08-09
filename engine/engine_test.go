@@ -23,6 +23,7 @@ import (
 
 	"github.com/thanos-io/promql-engine/engine"
 	"github.com/thanos-io/promql-engine/execution/model"
+	executionparse "github.com/thanos-io/promql-engine/execution/parse"
 	"github.com/thanos-io/promql-engine/extlabels"
 	"github.com/thanos-io/promql-engine/logicalplan"
 	"github.com/thanos-io/promql-engine/query"
@@ -100,6 +101,117 @@ func TestPromqlAcceptance(t *testing.T) {
 	}
 
 	promqltest.RunBuiltinTests(st, engine)
+}
+
+func TestHistogramQuantiles(t *testing.T) {
+	// Construct the engine before registering with the package-level parser to
+	// verify that the engine includes its private compatibility function map.
+	ng := engine.New(engine.Opts{
+		EngineOpts: promql.EngineOpts{
+			Logger:     promslog.NewNopLogger(),
+			MaxSamples: 1_000_000,
+			Timeout:    time.Minute,
+		},
+	})
+
+	// promqltest validates expressions with the package-level Prometheus parser
+	// before handing them to the engine. Register the compatibility descriptor
+	// for the duration of this test.
+	originalFunction, functionExisted := parser.Functions["histogram_quantiles"]
+	parser.Functions["histogram_quantiles"] = executionparse.CompatibilityFunctions["histogram_quantiles"]
+	t.Cleanup(func() {
+		if functionExisted {
+			parser.Functions["histogram_quantiles"] = originalFunction
+		} else {
+			delete(parser.Functions, "histogram_quantiles")
+		}
+	})
+
+	promqltest.RunTest(t, `
+load 1m
+  testhistogram_bucket{series="a", le="1"} 1
+  testhistogram_bucket{series="a", le="+Inf"} 2
+  testhistogram_bucket{series="b", le="2"} 2
+  testhistogram_bucket{series="b", le="+Inf"} 4
+
+eval instant at 0 histogram_quantiles(testhistogram_bucket, "q", 0, 0.5, 1)
+  expect no_warn
+  {q="0.0", series="a"} 0
+  {q="0.0", series="b"} 0
+  {q="0.5", series="a"} 1
+  {q="0.5", series="b"} 2
+  {q="1.0", series="a"} 1
+  {q="1.0", series="b"} 2
+
+clear
+
+load 5m
+  single_histogram {{schema:0 sum:5 count:4 buckets:[1 2 1]}}
+
+eval instant at 1m histogram_quantiles(single_histogram, "q", 0.5)
+  expect no_info
+  {q="0.5"} 1.414213562373095
+
+clear
+
+load 1m
+  changing_bucket{le="1"} 1 1 1
+  changing_bucket{le="+Inf"} 2 2 2
+  quantile_value 0 0.5 1
+
+eval range from 0 to 2m step 1m histogram_quantiles(changing_bucket, "q", time() / 120)
+  expect no_warn
+  {q="0.0"} 0 _ _
+  {q="0.5"} _ 1 _
+  {q="1.0"} _ _ 1
+
+eval range from 0 to 2m step 1m sum by (q) (histogram_quantiles(changing_bucket, "q", time() / 120))
+  expect no_warn
+  {q="0.0"} 0 _ _
+  {q="0.5"} _ 1 _
+  {q="1.0"} _ _ 1
+
+eval range from 0 to 2m step 1m histogram_quantiles(changing_bucket, "q", scalar(quantile_value))
+  expect no_warn
+  {q="0.0"} 0 _ _
+  {q="0.5"} _ 1 _
+  {q="1.0"} _ _ 1
+
+clear
+
+load 1m
+  duplicate_bucket{side="left", le="1"} 1
+  duplicate_bucket{side="left", le="+Inf"} 2
+  duplicate_bucket{side="right", le="1"} 1
+  duplicate_bucket{side="right", le="+Inf"} 2
+
+eval instant at 0 histogram_quantiles(duplicate_bucket, "side", 0.5)
+  expect fail
+
+clear
+
+load 1m
+  duplicate_quantile_bucket{le="1"} 1
+  duplicate_quantile_bucket{le="+Inf"} 2
+
+eval instant at 0 histogram_quantiles(duplicate_quantile_bucket, "q", 0.5, 0.5)
+  expect fail
+
+clear
+
+load 1m
+  mixed_histogram{host="a"} {{schema:0 sum:5 count:4 buckets:[1 2 1]}}
+  mixed_histogram{host="a", le="1"} 1
+  mixed_histogram{host="a", le="+Inf"} 2
+
+eval instant at 0 histogram_quantiles(mixed_histogram, "q", 0.5, 0.9)
+  expect warn msg: PromQL warning: vector contains a mix of classic and native histograms for metric name "mixed_histogram"
+
+clear
+
+eval instant at 0 histogram_quantiles(non_existent, "q", NaN)
+  expect warn msg: PromQL warning: quantile value should be between 0 and 1, got NaN
+`, ng)
 }
 
 func TestVectorSelectorWithGaps(t *testing.T) {

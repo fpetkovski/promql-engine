@@ -142,8 +142,9 @@ func NewWithScanners(opts Opts, scanners engstorage.Scanners) *Engine {
 		)
 	}
 
-	functions := make(map[string]*parser.Function, len(parser.Functions))
+	functions := make(map[string]*parser.Function, len(parser.Functions)+len(parse.CompatibilityFunctions))
 	maps.Copy(functions, parser.Functions)
+	maps.Copy(functions, parse.CompatibilityFunctions)
 	if opts.EnableXFunctions {
 		maps.Copy(functions, parse.XFunctions)
 	}

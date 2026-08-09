@@ -10,6 +10,24 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 )
 
+// CompatibilityFunctions contains PromQL functions that are newer than the
+// currently pinned Prometheus parser. They are always registered with the
+// engine and retain their upstream experimental-function gating.
+var CompatibilityFunctions = map[string]*parser.Function{
+	"histogram_quantiles": {
+		Name: "histogram_quantiles",
+		ArgTypes: []parser.ValueType{
+			parser.ValueTypeVector,
+			parser.ValueTypeString,
+			parser.ValueTypeScalar,
+			parser.ValueTypeScalar,
+		},
+		Variadic:     9,
+		ReturnType:   parser.ValueTypeVector,
+		Experimental: true,
+	},
+}
+
 var XFunctions = map[string]*parser.Function{
 	"xdelta": {
 		Name:       "xdelta",
@@ -37,6 +55,9 @@ func IsExtFunction(functionName string) bool {
 func UnknownFunctionError(name string) error {
 	msg := fmt.Sprintf("unknown function: %s", name)
 	if _, ok := parser.Functions[name]; ok {
+		return errors.Wrap(ErrNotImplemented, msg)
+	}
+	if _, ok := CompatibilityFunctions[name]; ok {
 		return errors.Wrap(ErrNotImplemented, msg)
 	}
 

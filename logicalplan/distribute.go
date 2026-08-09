@@ -21,7 +21,7 @@ import (
 )
 
 var (
-	RewrittenExternalLabelWarning = errors.Newf("%s: rewriting an external label with label_replace can disable distributed query execution", annotations.PromQLWarning.Error())
+	RewrittenExternalLabelWarning = errors.Newf("%s: rewriting an external label can disable distributed query execution", annotations.PromQLWarning.Error())
 )
 
 type timeRange struct {
@@ -694,8 +694,8 @@ func preservesPartitionLabels(expr Node, partitionLabels map[string]struct{}) bo
 		return preservesPartitionLabels(e.LHS, partitionLabels) &&
 			preservesPartitionLabels(e.RHS, partitionLabels)
 	case *FunctionCall:
-		if e.Func.Name == "label_replace" || e.Func.Name == "label_join" {
-			if _, ok := partitionLabels[UnsafeUnwrapString(e.Args[1])]; ok {
+		if targetLabel, rewritesLabel := functionTargetLabel(e); rewritesLabel {
+			if _, ok := partitionLabels[targetLabel]; ok {
 				return false
 			}
 		}
@@ -755,8 +755,7 @@ func (m DistributedExecutionOptimizer) isDistributive(expr *Node, engineLabels m
 			return false
 		}
 	case *FunctionCall:
-		if e.Func.Name == "label_replace" || e.Func.Name == "label_join" {
-			targetLabel := UnsafeUnwrapString(e.Args[1])
+		if targetLabel, rewritesLabel := functionTargetLabel(e); rewritesLabel {
 			if _, ok := engineLabels[targetLabel]; ok {
 				warns.Add(RewrittenExternalLabelWarning)
 				return false
@@ -771,6 +770,15 @@ func (m DistributedExecutionOptimizer) isDistributive(expr *Node, engineLabels m
 	}
 
 	return true
+}
+
+func functionTargetLabel(expr *FunctionCall) (string, bool) {
+	switch expr.Func.Name {
+	case "label_replace", "label_join", "histogram_quantiles":
+		return UnsafeUnwrapString(expr.Args[1]), true
+	default:
+		return "", false
+	}
 }
 
 func isBinaryExpressionWithOneScalarSide(expr *Binary) bool {
