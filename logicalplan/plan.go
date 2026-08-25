@@ -439,15 +439,47 @@ func insertDuplicateLabelChecks(expr Node) Node {
 		switch t := (*node).(type) {
 		case *CheckDuplicateLabels:
 			return
-		case *Aggregation, *Unary, *Binary, *FunctionCall:
+		case *Aggregation, *Binary:
+			// Aggregations and binary expressions build their output label sets
+			// from grouping / matching labels, so those are always the real ones.
+			*node = &CheckDuplicateLabels{Expr: t}
+		case *Unary, *FunctionCall:
+			// These map their input series one-to-one onto their output, so
+			// inside a projected subtree their label sets are the trimmed ones
+			// and a "duplicate" here says nothing about the real series.
+			if hasTrimmedSelector(*node) {
+				return
+			}
 			*node = &CheckDuplicateLabels{Expr: t}
 		case *VectorSelector:
-			if t.SelectTimestamp {
+			if t.SelectTimestamp && !isTrimmedSelector(t) {
 				*node = &CheckDuplicateLabels{Expr: t}
 			}
 		}
 	})
 	return expr
+}
+
+func isTrimmedSelector(n *VectorSelector) bool {
+	return n.Projection != nil && (n.Projection.Include || len(n.Projection.Labels) > 0)
+}
+
+// hasTrimmedSelector reports whether the label sets flowing out of node come
+// from a selector that a projection trimmed. Aggregations and binary
+// expressions rebuild label sets, so the walk stops there.
+func hasTrimmedSelector(node Node) bool {
+	switch n := node.(type) {
+	case *VectorSelector:
+		return isTrimmedSelector(n)
+	case *Aggregation, *Binary:
+		return false
+	}
+	for _, c := range node.Children() {
+		if hasTrimmedSelector(*c) {
+			return true
+		}
+	}
+	return false
 }
 
 // https://github.com/prometheus/prometheus/blob/dfae954dc1137568f33564e8cffda321f2867925/promql/engine.go#L754
