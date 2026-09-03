@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,75 @@ func TestQueryExplain(t *testing.T) {
 				testutil.Equals(t, tc.expected, explainableQuery.Explain())
 			})
 		}
+	}
+}
+
+func TestQueryPlansShowProjection(t *testing.T) {
+	t.Parallel()
+
+	optimizers := slices.Clone(logicalplan.DefaultOptimizers)
+	optimizers = append(optimizers, logicalplan.ProjectionOptimizer{SeriesHashLabel: "__series_hash__"})
+	ng := engine.New(engine.Opts{
+		EngineOpts:          promql.EngineOpts{Timeout: time.Hour},
+		LogicalOptimizers:   optimizers,
+		EnableAnalysis:      true,
+		DecodingConcurrency: 1,
+	})
+	series := storage.MockSeries(
+		[]int64{240, 270, 300},
+		[]float64{1, 2, 3},
+		[]string{labels.MetricName, "foo", "instance", "a", "job", "b"},
+	)
+
+	for _, tc := range []struct {
+		query            string
+		expectedOperator string
+	}{
+		{
+			query:            `sum by (job) (foo)`,
+			expectedOperator: `[vectorSelector] {[__name__="foo"]} 0 mod 1 [projection=include(job)]`,
+		},
+		{
+			query:            `sum without (instance) (rate(foo[5m]))`,
+			expectedOperator: `[matrixSelector] rate({[__name__="foo"]}[5m0s] 0 mod 1) [projection=exclude(instance)]`,
+		},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			query, err := ng.NewInstantQuery(t.Context(), storageWithSeries(series), nil, tc.query, time.Unix(300, 0))
+			require.NoError(t, err)
+			defer query.Close()
+
+			var explainContains func(*engine.ExplainOutputNode) bool
+			explainContains = func(node *engine.ExplainOutputNode) bool {
+				if node.OperatorName == tc.expectedOperator {
+					return true
+				}
+				for i := range node.Children {
+					if explainContains(&node.Children[i]) {
+						return true
+					}
+				}
+				return false
+			}
+			require.True(t, explainContains(query.(engine.ExplainableQuery).Explain()), "projection missing from explain plan")
+
+			result := query.Exec(t.Context())
+			require.NoError(t, result.Err)
+
+			var analyzeContains func(*engine.AnalyzeOutputNode) bool
+			analyzeContains = func(node *engine.AnalyzeOutputNode) bool {
+				if node.OperatorTelemetry.String() == tc.expectedOperator {
+					return true
+				}
+				for _, child := range node.Children {
+					if analyzeContains(child) {
+						return true
+					}
+				}
+				return false
+			}
+			require.True(t, analyzeContains(query.(engine.ExplainableQuery).Analyze()), "projection missing from analyze plan")
+		})
 	}
 }
 

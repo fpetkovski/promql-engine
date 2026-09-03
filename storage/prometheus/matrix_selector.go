@@ -14,6 +14,7 @@ import (
 	"github.com/thanos-io/promql-engine/execution/model"
 	"github.com/thanos-io/promql-engine/execution/parse"
 	"github.com/thanos-io/promql-engine/execution/telemetry"
+	"github.com/thanos-io/promql-engine/logicalplan"
 	"github.com/thanos-io/promql-engine/query"
 	"github.com/thanos-io/promql-engine/ringbuffer"
 	"github.com/thanos-io/promql-engine/warnings"
@@ -64,8 +65,9 @@ type matrixSelector struct {
 	currentSeries   int64
 	seriesBatchSize int64
 
-	shard     int
-	numShards int
+	shard      int
+	numShards  int
+	projection *logicalplan.Projection
 
 	nonCounterMetric string
 	hasFloats        bool
@@ -83,6 +85,20 @@ func NewMatrixSelector(
 	selectRange, offset time.Duration,
 	batchSize int64,
 	shard, numShard int,
+) (model.VectorOperator, error) {
+	return newMatrixSelector(selector, functionName, arg, arg2, opts, selectRange, offset, batchSize, shard, numShard, nil)
+}
+
+func newMatrixSelector(
+	selector SeriesSelector,
+	functionName string,
+	arg float64,
+	arg2 float64,
+	opts *query.Options,
+	selectRange, offset time.Duration,
+	batchSize int64,
+	shard, numShard int,
+	projection *logicalplan.Projection,
 ) (model.VectorOperator, error) {
 	call, err := ringbuffer.NewRangeVectorFunc(functionName)
 	if err != nil {
@@ -107,8 +123,9 @@ func NewMatrixSelector(
 		currentStep:     opts.Start.UnixMilli(),
 		seriesBatchSize: batchSize,
 
-		shard:     shard,
-		numShards: numShard,
+		shard:      shard,
+		numShards:  numShard,
+		projection: projection,
 	}
 
 	// For instant queries, set the step to a positive value
@@ -360,9 +377,9 @@ func (o *matrixSelector) newBuffer(ctx context.Context) ringbuffer.Buffer {
 func (o *matrixSelector) String() string {
 	r := time.Duration(o.selectRange) * time.Millisecond
 	if o.call != nil {
-		return fmt.Sprintf("[matrixSelector] %v({%v}[%s] %v mod %v)", o.functionName, o.storage.Matchers(), r, o.shard, o.numShards)
+		return fmt.Sprintf("[matrixSelector] %v({%v}[%s] %v mod %v)%s", o.functionName, o.storage.Matchers(), r, o.shard, o.numShards, formatProjection(o.projection))
 	}
-	return fmt.Sprintf("[matrixSelector] {%v}[%s] %v mod %v", o.storage.Matchers(), r, o.shard, o.numShards)
+	return fmt.Sprintf("[matrixSelector] {%v}[%s] %v mod %v%s", o.storage.Matchers(), r, o.shard, o.numShards, formatProjection(o.projection))
 }
 
 // selectPoints advances one series' buffer to the requested range and offers
