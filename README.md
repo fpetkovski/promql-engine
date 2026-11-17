@@ -86,6 +86,10 @@ Storage must support concurrent `Select` calls and iteration of distinct series 
 
 Each PromQL query is initially treated as a declarative (logical) plan and is optimized before execution. The engine currently supports several optimizers, some of which are enabled by default and others need to be explicitly opted-into. Optimizers implement the [Optimizer](https://pkg.go.dev/github.com/thanos-io/promql-engine/logicalplan#Optimizer) interface and all implementations can be found in the [logicalplan](https://pkg.go.dev/github.com/thanos-io/promql-engine/logicalplan) package.
 
+### Batch range queries
+
+`Engine.NewRangeBatch` evaluates multiple queries on a common grid and shares eligible identical subplans, such as the aggregate feeding several histogram quantiles. It uses a batch-wide sample budget and cancellation scope. See [batch range queries](./docs/batch-queries.md) for the API, execution contract, limitations, and benchmarks.
+
 ### Extensibility
 
 The engine can be extended through custom optimizers which can be injected at instantiation. These optimizers can be used to either rearrange the logical nodes into a new plan or to inject new nodes altogether.

@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"reflect"
 	"sync"
 
 	"github.com/thanos-io/promql-engine/execution/model"
@@ -85,6 +86,16 @@ func (a *AnalyzeOutputNode) aggregateSamples() {
 }
 
 func analyzeQuery(op model.VectorOperator) *AnalyzeOutputNode {
+	return analyzeQueryWithSeen(op, nil)
+}
+
+func analyzeQueryWithSeen(op model.VectorOperator, seen map[model.VectorOperator]struct{}) *AnalyzeOutputNode {
+	if seen != nil && reflect.TypeOf(op).Comparable() {
+		if _, visited := seen[op]; visited {
+			return nil
+		}
+		seen[op] = struct{}{}
+	}
 	var operatorID *uint64
 	if ider, ok := op.(model.OperatorIDer); ok {
 		id := ider.OperatorID()
@@ -98,7 +109,7 @@ func analyzeQuery(op model.VectorOperator) *AnalyzeOutputNode {
 	children := obsv.Explain()
 	var childTelemetry []*AnalyzeOutputNode
 	for _, child := range children {
-		if node := analyzeQuery(child); node != nil {
+		if node := analyzeQueryWithSeen(child, seen); node != nil {
 			childTelemetry = append(childTelemetry, node)
 		}
 	}

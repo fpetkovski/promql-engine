@@ -61,7 +61,7 @@ func (w *warnings) add(warns error) {
 func (w *warnings) get() annotations.Annotations {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.warns
+	return maps.Clone(w.warns)
 }
 
 func (w *warnings) merge(anno annotations.Annotations) {
@@ -91,9 +91,7 @@ func MergeToContext(annos annotations.Annotations, ctx context.Context) {
 }
 
 func FromContext(ctx context.Context) annotations.Annotations {
-	warns := ctx.Value(key).(*warnings).get()
-
-	return maps.Clone(warns)
+	return ctx.Value(key).(*warnings).get()
 }
 
 // ConvertHistogramError converts histogram operation errors to appropriate annotation warnings.
