@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"math"
 
+	"github.com/efficientgo/core/errors"
 	"github.com/prometheus/prometheus/model/labels"
 )
 
@@ -175,6 +176,17 @@ func unmarshalNode(data []byte) (Node, error) {
 			return nil, err
 		}
 		return s, nil
+	case SharedNode:
+		s := &Shared{}
+		if err := json.Unmarshal(t.Data, s); err != nil {
+			return nil, err
+		}
+		if len(t.Children) != 1 || s.ID < 0 || s.Consumers < 2 {
+			return nil, errors.New("invalid shared plan boundary")
+		}
+		var err error
+		s.Expr, err = unmarshalNode(t.Children[0])
+		return s, err
 	case CheckDuplicateNode:
 		c := &CheckDuplicateLabels{}
 		if err := json.Unmarshal(t.Data, c); err != nil {

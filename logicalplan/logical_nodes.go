@@ -29,6 +29,7 @@ const (
 	StepInvariantNode  = "step_invariant"
 	ParensNode         = "parens"
 	UnaryNode          = "unary"
+	SharedNode         = "shared"
 
 	RemoteExecutionNode = "remote_exec"
 	RemoteMergeNode     = "remote_merge"

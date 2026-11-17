@@ -59,10 +59,12 @@ type Opts struct {
 	Logger *slog.Logger
 	Reg    prometheus.Registerer
 
-	// MaxSamples limits the number of samples loaded by a query.
+	// MaxSamples limits the number of samples loaded by a query. For range
+	// batches it applies to the combined working set and retained results.
 	MaxSamples int
 
-	// Timeout limits the duration of query execution.
+	// Timeout limits the duration of query execution (the whole range batch,
+	// including admission, when using NewRangeBatch).
 	Timeout time.Duration
 
 	// ActiveQueryTracker tracks queries and limits concurrent execution.
@@ -593,82 +595,34 @@ func (q *compatibilityQuery) Exec(ctx context.Context) (ret *promql.Result) {
 		return newErrResult(ret, err)
 	}
 
-	totalSteps := q.opts.TotalSteps()
-	series := make([]promql.Series, len(resultSeries))
-	for i, s := range resultSeries {
-		series[i].Metric = s
-	}
-
+	collector := newResultCollector(resultSeries, q.opts)
 	buf := make([]model.StepVector, q.opts.StepsBatch)
-	var batchSamples int
-loop:
 	for {
-		select {
-		case <-ctx.Done():
-			return newErrResult(ret, ctx.Err())
-		default:
-			n, err := q.Query.exec.Next(ctx, buf)
-			if err != nil {
-				return newErrResult(ret, err)
-			}
-			if n == 0 {
-				break loop
-			}
-
-			// Case where Series call might return nil, but samples are present.
-			// For example scalar(http_request_total) where http_request_total has multiple values.
-			if len(series) == 0 && n > 0 {
-				series = make([]promql.Series, len(buf[0].Samples))
-			}
-
-			for i := range n {
-				vector := &buf[i]
-				batchSamples += len(vector.SampleIDs)
-				for j, s := range vector.SampleIDs {
-					if series[s].Floats == nil {
-						series[s].Floats = make([]promql.FPoint, 0, totalSteps)
-					}
-					series[s].Floats = append(series[s].Floats, promql.FPoint{
-						T: vector.T,
-						F: vector.Samples[j],
-					})
-				}
-				for j, s := range vector.HistogramIDs {
-					if series[s].Histograms == nil {
-						series[s].Histograms = make([]promql.HPoint, 0, totalSteps)
-					}
-					series[s].Histograms = append(series[s].Histograms, promql.HPoint{
-						T: vector.T,
-						H: vector.Histograms[j],
-					})
-					batchSamples += telemetry.CalculateHistogramSampleCount(vector.Histograms[j])
-				}
-			}
-			q.opts.SampleTracker.Add(batchSamples)
-			batchSamples = 0
-			if err := q.opts.SampleTracker.CheckLimit(); err != nil {
-				return newErrResult(ret, err)
-			}
+		if err := ctx.Err(); err != nil {
+			return newErrResult(ret, err)
+		}
+		n, err := q.Query.exec.Next(ctx, buf)
+		if err != nil {
+			return newErrResult(ret, err)
+		}
+		if n == 0 {
+			break
+		}
+		if err := collector.append(buf[:n]); err != nil {
+			return newErrResult(ret, err)
 		}
 	}
 
-	// For range Query we expect always a Matrix value type.
 	if q.t == RangeQuery {
-		matrix := make(promql.Matrix, 0, len(series))
-		for _, s := range series {
-			if len(s.Floats)+len(s.Histograms) == 0 {
-				continue
-			}
-			matrix = append(matrix, s)
-		}
-		sort.Sort(matrix)
-		if matrix.ContainsSameLabelset() {
-			return newErrResult(ret, extlabels.ErrDuplicateLabelSet)
+		matrix, err := collector.matrix()
+		if err != nil {
+			return newErrResult(ret, err)
 		}
 		ret.Value = matrix
 		ret.Warnings = warnings.FromContext(ctx)
 		return ret
 	}
+	series := collector.series
 
 	var result parser.Value
 	switch q.plan.Root().ReturnType() {
