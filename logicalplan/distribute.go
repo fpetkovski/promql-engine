@@ -166,6 +166,11 @@ type DistributedExecutionOptimizer struct {
 //     a distribution strategy whose parent has none.
 //  3. Replace each selected subtree with the remote plan for its strategy.
 func (m DistributedExecutionOptimizer) Optimize(plan Node, opts *query.Options) (Node, annotations.Annotations) {
+	// Remote eligibility currently considers the ordinary window only. Computing
+	// boundaries on different shards and deduplicating the results can be wrong.
+	if hasExtendedSelector(plan) {
+		return plan, nil
+	}
 	engines := m.Endpoints.Engines(MinMaxTime(plan, opts))
 	sort.Slice(engines, func(i, j int) bool {
 		return engines[i].MinT() < engines[j].MinT()

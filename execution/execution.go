@@ -18,7 +18,10 @@ package execution
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/thanos-io/promql-engine/execution/aggregate"
@@ -37,6 +40,7 @@ import (
 	"github.com/thanos-io/promql-engine/storage"
 
 	"github.com/efficientgo/core/errors"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
 	promstorage "github.com/prometheus/prometheus/storage"
@@ -115,6 +119,13 @@ func newCall(ctx context.Context, e *logicalplan.FunctionCall, scanners storage.
 	hints.Grouping = nil
 	hints.By = false
 
+	for _, arg := range e.Args {
+		if matrix, ok := arg.(*logicalplan.MatrixSelector); ok {
+			if err := checkRangeFunction(matrix.VectorSelector.Mode(), e.Func.Name); err != nil {
+				return deferredError{err: err}, nil
+			}
+		}
+	}
 	if e.Func.Name == "absent_over_time" {
 		return newAbsentOverTimeOperator(ctx, e, scanners, opts, hints)
 	}
@@ -429,11 +440,33 @@ func getTimeRangesForVectorSelector(n *logicalplan.VectorSelector, opts *query.O
 		start = *n.Timestamp
 		end = *n.Timestamp
 	}
-	if evalRange == 0 {
-		start -= opts.LookbackDelta.Milliseconds() - 1
-	} else {
-		start -= evalRange - 1
-	}
+	before, after := n.Mode().Window(evalRange, opts.LookbackDelta.Milliseconds())
 	offset := n.OriginalOffset.Milliseconds()
-	return start - offset, end - offset
+	// Storage bounds are inclusive, but the selector excludes the lower edge.
+	return start - before + 1 - offset, end + after - offset
 }
+
+func checkRangeFunction(mode logicalplan.SelectorMode, name string) error {
+	var modifier string
+	var allowed map[string]struct{}
+	switch mode {
+	case logicalplan.AnchoredSelector:
+		modifier, allowed = "anchored", promql.AnchoredSafeFunctions
+	case logicalplan.SmoothedSelector:
+		modifier, allowed = "smoothed", promql.SmoothedSafeFunctions
+	default:
+		return nil
+	}
+	if _, ok := allowed[name]; ok {
+		return nil
+	}
+	return errors.Newf("%s modifier can only be used with: %s - not with %s", modifier, strings.Join(slices.Sorted(maps.Keys(allowed)), ", "), name)
+}
+
+// deferredError matches Prometheus by reporting modifier errors at evaluation time.
+type deferredError struct{ err error }
+
+func (d deferredError) Next(context.Context, []model.StepVector) (int, error) { return 0, d.err }
+func (d deferredError) Series(context.Context) ([]labels.Labels, error)       { return nil, d.err }
+func (d deferredError) Explain() []model.VectorOperator                       { return nil }
+func (d deferredError) String() string                                        { return d.err.Error() }

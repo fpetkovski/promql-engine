@@ -96,7 +96,7 @@ func NewFromBytes(bytes []byte, queryOpts *query.Options, planOpts PlanOptions) 
 	}, nil
 }
 
-func getTimeRangesForSelector(qOpts *query.Options, n *parser.VectorSelector, parents []*Node, evalRange time.Duration) (int64, int64) {
+func getTimeRangesForSelector(qOpts *query.Options, n *VectorSelector, parents []*Node, evalRange time.Duration) (int64, int64) {
 	start, end := qOpts.Start.UnixMilli(), qOpts.End.UnixMilli()
 	subqOffset, subqRange, subqTs := logicalSubqueryTimes(parents)
 
@@ -116,14 +116,10 @@ func getTimeRangesForSelector(qOpts *query.Options, n *parser.VectorSelector, pa
 		end -= offsetMilliseconds
 	}
 
-	if evalRange == 0 {
-		start -= qOpts.LookbackDelta.Milliseconds()
-	} else {
-		start -= evalRange.Milliseconds()
-	}
-
-	start -= n.OriginalOffset.Milliseconds()
-	end -= n.OriginalOffset.Milliseconds()
+	before, after := n.Mode().Window(evalRange.Milliseconds(), qOpts.LookbackDelta.Milliseconds())
+	offset := n.OriginalOffset.Milliseconds()
+	start -= before + offset
+	end += after - offset
 
 	if parse.IsExtFunction(extractFuncFromPath(parents)) {
 		// Buffer more so that we could reasonably
@@ -167,7 +163,7 @@ func MinMaxTime(root Node, qOpts *query.Options) (int64, int64) {
 	TraverseWithParents(nil, &root, func(parents []*Node, node *Node) {
 		switch n := (*node).(type) {
 		case *VectorSelector:
-			start, end := getTimeRangesForSelector(qOpts, n.VectorSelector, parents, evalRange)
+			start, end := getTimeRangesForSelector(qOpts, n, parents, evalRange)
 			if start < minTimestamp {
 				minTimestamp = start
 			}

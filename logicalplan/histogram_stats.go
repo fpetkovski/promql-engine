@@ -19,6 +19,11 @@ func (DetectHistogramStatsOptimizer) Optimize(plan Node, _ *query.Options) (Node
 		}
 
 		n.DecodeNativeHistogramStats = false
+		if n.Mode() != StandardSelector {
+			// Interpolation and reset detection need the full histogram even if
+			// a subsequent function only reads its count or sum.
+			return
+		}
 
 	pathLoop:
 		for i := len(parents) - 1; i >= 0; i-- { // Walk backwards up the path.

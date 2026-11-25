@@ -42,6 +42,9 @@ func labelSetsMatch(matchers []*labels.Matcher, lset ...labels.Labels) bool {
 }
 
 func (m PassthroughOptimizer) Optimize(plan Node, opts *query.Options) (Node, annotations.Annotations) {
+	if hasExtendedSelector(plan) {
+		return plan, nil
+	}
 	mint, maxt := MinMaxTime(plan, opts)
 	engines := m.Endpoints.Engines(mint, maxt)
 	if len(engines) == 0 {

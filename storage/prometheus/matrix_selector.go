@@ -41,7 +41,10 @@ type matrixScanner struct {
 }
 
 // release drops the per-series state, which must not be read or rebuilt after.
-func (m *matrixScanner) release() {
+func (m *matrixScanner) release(tracker query.SampleTracker) {
+	if tracker != nil && m.buffer != nil {
+		tracker.Remove(m.buffer.SampleCount())
+	}
 	m.buffer = nil
 	m.iterator = nil
 }
@@ -69,6 +72,7 @@ type matrixSelector struct {
 	call         ringbuffer.FunctionCall
 	fhReader     *histogram.FloatHistogram
 	opts         *query.Options
+	extended     *extendedSelector
 
 	numSteps    int
 	mint        int64
@@ -107,37 +111,8 @@ func NewMatrixSelector(
 	if err != nil {
 		return nil, err
 	}
-	m := &matrixSelector{
-		storage:      selector,
-		call:         call,
-		functionName: functionName,
-		scalarArg:    arg,
-		scalarArg2:   arg2,
-		fhReader:     &histogram.FloatHistogram{},
-
-		opts:     opts,
-		numSteps: opts.NumStepsPerBatch(),
-		mint:     opts.Start.UnixMilli(),
-		maxt:     opts.End.UnixMilli(),
-		step:     opts.Step.Milliseconds(),
-
-		selectRange:     selectRange.Milliseconds(),
-		offset:          offset.Milliseconds(),
-		currentStep:     opts.Start.UnixMilli(),
-		seriesBatchSize: batchSize,
-
-		shard:     shard,
-		numShards: numShard,
-	}
-
-	// For instant queries, set the step to a positive value
-	// so that the operator can terminate.
-	if m.step == 0 {
-		m.step = 1
-	}
-
-	m.telemetry = telemetry.NewTelemetry(m, opts)
-	return telemetry.NewOperator(m.telemetry, m), nil
+	o := newMatrixSelector(selector, functionName, call, arg, arg2, opts, selectRange, offset, batchSize, shard, numShard)
+	return o.instrument(), nil
 }
 
 func (o *matrixSelector) Explain() []model.VectorOperator {
@@ -191,6 +166,12 @@ func (o *matrixSelector) Next(ctx context.Context, buf []model.StepVector) (int,
 	ts = o.currentStep
 	firstSeries := o.currentSeries
 	batchSamplesDelta := 0
+	var tracker query.SampleTracker
+	if o.extended != nil {
+		// Charge extended windows before admitting samples, including samples
+		// read for a single evaluation step of an instant query.
+		tracker = o.opts.SampleTracker
+	}
 
 	for ; o.currentSeries-firstSeries < o.seriesBatchSize && o.currentSeries < int64(len(o.scanners)); o.currentSeries++ {
 		var (
@@ -209,19 +190,23 @@ func (o *matrixSelector) Next(ctx context.Context, buf []model.StepVector) (int,
 			} else {
 				scanner.iterator = scanner.rawSeries.Iterator(nil)
 			}
-			scanner.buffer = o.newBuffer(ctx)
+			scanner.buffer = o.newBuffer(ctx, scanner)
 		}
 
 		var sampleCountBefore int
-		if !scanner.exhausted {
+		if o.extended == nil && !scanner.exhausted {
 			sampleCountBefore = scanner.buffer.SampleCount()
 		}
 
 		for currStep := 0; !scanner.exhausted && currStep < n && seriesTs <= o.maxt; currStep++ {
 			maxt := seriesTs - o.offset
 			mint := maxt - o.selectRange
+			if o.extended != nil {
+				mint = maxt - o.extended.before
+				maxt += o.extended.after
+			}
 
-			if err := scanner.selectPoints(mint, maxt, seriesTs, o.fhReader); err != nil {
+			if err := scanner.selectPoints(mint, maxt, seriesTs, o.fhReader, tracker); err != nil {
 				return 0, err
 			}
 			// TODO(saswatamcode): Handle multi-arg functions for matrixSelectors.
@@ -250,10 +235,12 @@ func (o *matrixSelector) Next(ctx context.Context, buf []model.StepVector) (int,
 			seriesTs += o.step
 		}
 
-		if o.opts.IsInstantQuery() {
-			scanner.release()
+		if o.opts.IsInstantQuery() || (o.extended != nil && seriesTs > o.maxt) {
+			scanner.release(tracker)
 		} else if !scanner.exhausted {
-			batchSamplesDelta += scanner.buffer.SampleCount() - sampleCountBefore
+			if o.extended == nil {
+				batchSamplesDelta += scanner.buffer.SampleCount() - sampleCountBefore
+			}
 			if scanner.iteratorDrained {
 				scanner.releaseDrained()
 			}
@@ -272,6 +259,45 @@ func (o *matrixSelector) Next(ctx context.Context, buf []model.StepVector) (int,
 		o.currentSeries = 0
 	}
 	return n, nil
+}
+
+func newMatrixSelector(
+	selector SeriesSelector,
+	functionName string,
+	call ringbuffer.FunctionCall,
+	arg, arg2 float64,
+	opts *query.Options,
+	selectRange, offset time.Duration,
+	batchSize int64,
+	shard, numShards int,
+) *matrixSelector {
+	return &matrixSelector{
+		storage:      selector,
+		call:         call,
+		functionName: functionName,
+		scalarArg:    arg,
+		scalarArg2:   arg2,
+		fhReader:     &histogram.FloatHistogram{},
+
+		opts:     opts,
+		numSteps: opts.NumStepsPerBatch(),
+		mint:     opts.Start.UnixMilli(),
+		maxt:     opts.End.UnixMilli(),
+		step:     max(1, opts.Step.Milliseconds()), // A positive step also terminates instant queries.
+
+		selectRange:     selectRange.Milliseconds(),
+		offset:          offset.Milliseconds(),
+		currentStep:     opts.Start.UnixMilli(),
+		seriesBatchSize: batchSize,
+
+		shard:     shard,
+		numShards: numShards,
+	}
+}
+
+func (o *matrixSelector) instrument() model.VectorOperator {
+	o.telemetry = telemetry.NewTelemetry(o, o.opts)
+	return telemetry.NewOperator(o.telemetry, o)
 }
 
 func (o *matrixSelector) updateSampleTracker(delta int) error {
@@ -299,7 +325,7 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 		for i, s := range series {
 			origLbls := s.Labels()
 			lbls := origLbls
-			if o.functionName != "last_over_time" && o.functionName != "first_over_time" {
+			if o.functionName != "" && o.functionName != "last_over_time" && o.functionName != "first_over_time" {
 				lbls = lbls.DropReserved(schema.IsMetadataLabel)
 			}
 			o.scanners[i] = matrixScanner{
@@ -346,7 +372,13 @@ func (o *matrixSelector) shouldCheckSampleLimit(firstSeries int64) bool {
 	return isEndOfBatch || isLastSeries
 }
 
-func (o *matrixSelector) newBuffer(ctx context.Context) ringbuffer.Buffer {
+func (o *matrixSelector) newBuffer(ctx context.Context, scanner *matrixScanner) ringbuffer.Buffer {
+	if o.extended != nil {
+		metric := scanner.rawSeries.Labels()
+		return ringbuffer.New(ctx, 8, o.selectRange, o.offset, func(f ringbuffer.FunctionArgs) (float64, *histogram.FloatHistogram, bool, warnings.Warnings, error) {
+			return o.extended.eval(ctx, f, metric)
+		})
+	}
 	if ringbuffer.UseStreamingRingBuffers(*o.opts, o.selectRange) {
 		switch o.functionName {
 		case "rate":
@@ -399,12 +431,20 @@ func (o *matrixSelector) String() string {
 // implementation-specific admission rule to both the prefetched point and new
 // iterator points. Ordinary buffers retain (mint, maxt]; extended buffers may
 // additionally retain one baseline at or before mint.
-// TODO(fpetkovski): Add max samples limit.
 func (m *matrixScanner) selectPoints(
 	mint, maxt, evalt int64,
 	fh *histogram.FloatHistogram,
+	tracker query.SampleTracker,
 ) error {
-	m.buffer.Reset(mint, evalt)
+	if tracker != nil {
+		before := m.buffer.SampleCount()
+		m.buffer.Reset(mint, evalt)
+		if dropped := before - m.buffer.SampleCount(); dropped > 0 {
+			tracker.Remove(dropped)
+		}
+	} else {
+		m.buffer.Reset(mint, evalt)
+	}
 	if m.iteratorDrained {
 		return nil
 	}
@@ -413,7 +453,9 @@ func (m *matrixScanner) selectPoints(
 	}
 
 	if m.lastSample.T != math.MinInt64 {
-		m.buffer.Push(m.lastSample.T, m.lastSample.V)
+		if err := m.push(tracker, mint, m.lastSample.T, m.lastSample.V); err != nil {
+			return err
+		}
 		m.lastSample.T = math.MinInt64
 	}
 
@@ -435,7 +477,9 @@ func (m *matrixScanner) selectPoints(
 				m.lastSample.V.F = 0
 				return nil
 			}
-			m.buffer.Push(t, ringbuffer.Value{H: fh})
+			if err := m.push(tracker, mint, t, ringbuffer.Value{H: fh}); err != nil {
+				return err
+			}
 		case chunkenc.ValFloat:
 			t, v := m.iterator.At()
 			if value.IsStaleNaN(v) {
@@ -445,7 +489,9 @@ func (m *matrixScanner) selectPoints(
 				m.lastSample.T, m.lastSample.V.F, m.lastSample.V.H = t, v, nil
 				return nil
 			}
-			m.buffer.Push(t, ringbuffer.Value{F: v})
+			if err := m.push(tracker, mint, t, ringbuffer.Value{F: v}); err != nil {
+				return err
+			}
 		}
 	}
 	// Next returns ValNone on error as well as at the end of the series.
@@ -453,6 +499,31 @@ func (m *matrixScanner) selectPoints(
 		return err
 	}
 	m.iteratorDrained = true
+	return nil
+}
+
+func (m *matrixScanner) push(tracker query.SampleTracker, mint, t int64, v ringbuffer.Value) error {
+	if tracker != nil {
+		return m.pushTracked(tracker, mint, t, v)
+	}
+	m.buffer.Push(t, v)
+	return nil
+}
+
+func (m *matrixScanner) pushTracked(tracker query.SampleTracker, mint, t int64, v ringbuffer.Value) error {
+	if t <= mint {
+		return nil
+	}
+	count := 1
+	if v.H != nil {
+		count = telemetry.CalculateHistogramSampleCount(v.H)
+	}
+	tracker.Add(count)
+	if err := tracker.CheckLimit(); err != nil {
+		tracker.Remove(count)
+		return err
+	}
+	m.buffer.Push(t, v)
 	return nil
 }
 

@@ -19,6 +19,8 @@ The following table shows operations which are currently supported by the engine
 | Aggregations over time | Full support except for `quantile_over_time` with non-constant argument | Medium   |
 | Functions              | Full support except for `predict_linear` with non-constant argument     | Medium   |
 
+Extended range selectors (`anchored` and `smoothed`) are supported for the same range functions as Prometheus. `smoothed` also works on instant vector selectors. Queries using these modifiers are evaluated locally even in distributed mode, since boundary samples can live on another shard. Returning a bare range vector remains unsupported.
+
 ## Design
 
 > For a deeper, end-to-end description of the engine's design — execution model, series identity and memory management, range evaluation, parallelism, plan optimization, and distributed execution — see the [architecture note](./docs/architecture.md).

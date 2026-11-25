@@ -6,6 +6,7 @@ package prometheus
 import (
 	"context"
 	"math"
+	"time"
 
 	"github.com/thanos-io/promql-engine/execution/exchange"
 	"github.com/thanos-io/promql-engine/execution/model"
@@ -57,6 +58,9 @@ func (p Scanners) NewVectorSelector(
 	hints storage.SelectHints,
 	logicalNode logicalplan.VectorSelector,
 ) (model.VectorOperator, error) {
+	if logicalNode.Mode() == logicalplan.SmoothedSelector {
+		return p.newWindowSelector(opts, hints, &logicalNode, 0, "", 0, 0)
+	}
 	// Update hints with projection information if available
 	if logicalNode.Projection != nil {
 		hints.ProjectionLabels = logicalNode.Projection.Labels
@@ -129,33 +133,39 @@ func (p Scanners) NewMatrixSelector(
 		arg2 = tf
 	}
 
-	vs := logicalNode.VectorSelector
+	return p.newWindowSelector(opts, hints, logicalNode.VectorSelector, logicalNode.Range, call.Func.Name, arg, arg2)
+}
+
+func (p Scanners) newWindowSelector(
+	opts *query.Options,
+	hints storage.SelectHints,
+	vs *logicalplan.VectorSelector,
+	selectRange time.Duration,
+	functionName string,
+	arg, arg2 float64,
+) (model.VectorOperator, error) {
 	if vs.Projection != nil {
 		hints.ProjectionLabels = vs.Projection.Labels
 		hints.ProjectionInclude = vs.Projection.Include
 	}
 
 	selector := p.selectors.GetFilteredSelector(hints.Start, hints.End, opts.Step.Milliseconds(), vs.LabelMatchers, vs.Filters, hints)
-	if logicalNode.VectorSelector.DecodeNativeHistogramStats {
+	extended := vs.Mode() != logicalplan.StandardSelector
+	if vs.DecodeNativeHistogramStats && !extended {
 		selector = newHistogramStatsSelector(selector)
 	}
 
 	operators := make([]model.VectorOperator, 0, opts.DecodingConcurrency)
 	for i := range opts.DecodingConcurrency {
-		operator, err := NewMatrixSelector(
-			selector,
-			call.Func.Name,
-			arg,
-			arg2,
-			opts,
-			logicalNode.Range,
-			vs.Offset,
-			vs.BatchSize,
-			i,
-			opts.DecodingConcurrency,
-		)
-		if err != nil {
-			return nil, err
+		var operator model.VectorOperator
+		if extended {
+			operator = newExtendedSelector(selector, opts, vs, selectRange, functionName, i, opts.DecodingConcurrency)
+		} else {
+			var err error
+			operator, err = NewMatrixSelector(selector, functionName, arg, arg2, opts, selectRange, vs.Offset, vs.BatchSize, i, opts.DecodingConcurrency)
+			if err != nil {
+				return nil, err
+			}
 		}
 		operators = append(operators, exchange.NewConcurrent(operator, 2, opts))
 	}
